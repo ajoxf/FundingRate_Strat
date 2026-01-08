@@ -1,0 +1,342 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - Funding Rate Trading{% endblock %}
+
+{% block content %}
+<div class="grid grid-2">
+    <!-- Strategy Settings -->
+    <div class="card">
+        <div class="card-header">
+            <span class="card-title">Strategy Settings</span>
+        </div>
+        <form id="settings-form">
+            <div class="form-group">
+                <label class="form-label">Symbol</label>
+                <select id="symbol" class="form-control">
+                    <option value="BTC-USDT-SWAP">BTC-USDT-SWAP</option>
+                    <option value="ETH-USDT-SWAP">ETH-USDT-SWAP</option>
+                    <option value="SOL-USDT-SWAP">SOL-USDT-SWAP</option>
+                    <option value="DOGE-USDT-SWAP">DOGE-USDT-SWAP</option>
+                    <option value="XRP-USDT-SWAP">XRP-USDT-SWAP</option>
+                </select>
+                <span class="form-help">OKX perpetual swap to trade</span>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Lookback Periods</label>
+                <input type="number" id="lookback_periods" class="form-control" min="10" max="500" step="1">
+                <span class="form-help">Number of 8-hour funding periods for mean calculation (90 = 30 days)</span>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Entry Std Dev (σ)</label>
+                <input type="number" id="entry_std_dev" class="form-control" min="0.5" max="5" step="0.1">
+                <span class="form-help">Z-score threshold for entry signals (default: 2.0)</span>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Exit Std Dev (σ)</label>
+                <input type="number" id="exit_std_dev" class="form-control" min="0" max="1" step="0.1">
+                <span class="form-help">Z-score threshold for exit (mean reversion complete)</span>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Stop Loss Std Dev (σ)</label>
+                <input type="number" id="stop_loss_std_dev" class="form-control" min="3" max="10" step="0.5">
+                <span class="form-help">Z-score threshold for stop loss</span>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Position Size (Contracts)</label>
+                <input type="number" id="position_size" class="form-control" min="0.001" step="0.001">
+                <span class="form-help">Size of position to open</span>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label flex items-center gap-2">
+                    <span>Paper Trading Mode</span>
+                    <label class="toggle">
+                        <input type="checkbox" id="paper_mode">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </label>
+                <span class="form-help">When enabled, trades are simulated (no real orders)</span>
+            </div>
+
+            <div class="alert alert-warning" id="live-warning" style="display: none;">
+                <strong>Warning:</strong> Live trading mode is enabled. Real orders will be placed on OKX.
+            </div>
+
+            <button type="submit" class="btn btn-primary">Save Settings</button>
+        </form>
+    </div>
+
+    <!-- API Settings -->
+    <div>
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">OKX API Credentials</span>
+            </div>
+            <form id="api-form">
+                <div class="form-group">
+                    <label class="form-label">API Key</label>
+                    <input type="text" id="api_key" class="form-control" placeholder="Enter your OKX API key">
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">API Secret</label>
+                    <input type="password" id="api_secret" class="form-control" placeholder="Enter your OKX API secret">
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">API Passphrase</label>
+                    <input type="password" id="api_passphrase" class="form-control" placeholder="Enter your OKX API passphrase">
+                </div>
+
+                <div class="alert alert-warning">
+                    <strong>Security Note:</strong> API credentials are stored locally. Only provide read and trade permissions - never withdrawal permissions.
+                </div>
+
+                <button type="submit" class="btn btn-primary">Save API Credentials</button>
+            </form>
+        </div>
+
+        <!-- Data Management -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Data Management</span>
+            </div>
+
+            <div class="form-group">
+                <p class="text-muted mb-2">Bootstrap historical funding rate data from OKX.</p>
+                <button type="button" class="btn btn-secondary" id="bootstrap-btn" onclick="bootstrapData()">
+                    Fetch Historical Data
+                </button>
+            </div>
+
+            <div id="bootstrap-result" class="mt-2" style="display: none;"></div>
+
+            <div class="divider"></div>
+
+            <div>
+                <h4 class="mb-2">Strategy Information</h4>
+                <table class="table">
+                    <tr>
+                        <td class="text-muted">Funding Interval</td>
+                        <td class="text-right">Every 8 hours</td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Funding Times (UTC)</td>
+                        <td class="text-right">00:00, 08:00, 16:00</td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Data Update Frequency</td>
+                        <td class="text-right">Every 1 minute</td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Signal Check</td>
+                        <td class="text-right">On each data update</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Strategy Explanation -->
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">Strategy Explanation</span>
+    </div>
+    <div class="grid grid-2">
+        <div>
+            <h4 class="mb-2">Mean Reversion Logic</h4>
+            <p class="text-muted mb-4">
+                Funding rates on perpetual swaps tend to revert to their historical mean.
+                When funding rate deviates significantly (measured by Z-score), we take a
+                position expecting it to return to the mean.
+            </p>
+
+            <h4 class="mb-2">Entry Signals</h4>
+            <ul style="list-style: none; padding: 0;">
+                <li class="mb-2">
+                    <span class="badge badge-red">SHORT</span>
+                    <span class="text-muted">when Z-score &ge; +2.0σ (funding unusually HIGH)</span>
+                </li>
+                <li class="mb-2">
+                    <span class="badge badge-green">LONG</span>
+                    <span class="text-muted">when Z-score &le; -2.0σ (funding unusually LOW)</span>
+                </li>
+            </ul>
+        </div>
+        <div>
+            <h4 class="mb-2">Funding Rate Payments</h4>
+            <ul style="list-style: none; padding: 0;" class="text-muted">
+                <li class="mb-2">
+                    <strong class="text-green">Positive funding:</strong> Longs pay shorts
+                </li>
+                <li class="mb-2">
+                    <strong class="text-red">Negative funding:</strong> Shorts pay longs
+                </li>
+            </ul>
+
+            <h4 class="mb-2 mt-4">Exit Conditions</h4>
+            <ul style="list-style: none; padding: 0;" class="text-muted">
+                <li class="mb-2">
+                    <strong>Mean Reversion:</strong> Z-score returns to ±0.2σ
+                </li>
+                <li class="mb-2">
+                    <strong>Stop Loss:</strong> Z-score reaches ±6.0σ
+                </li>
+            </ul>
+        </div>
+    </div>
+</div>
+
+<div id="alert-container"></div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let currentSettings = {};
+
+    // Load settings
+    async function loadSettings() {
+        try {
+            const response = await fetch('/api/settings');
+            currentSettings = await response.json();
+
+            document.getElementById('symbol').value = currentSettings.symbol;
+            document.getElementById('lookback_periods').value = currentSettings.lookback_periods;
+            document.getElementById('entry_std_dev').value = currentSettings.entry_std_dev;
+            document.getElementById('exit_std_dev').value = currentSettings.exit_std_dev;
+            document.getElementById('stop_loss_std_dev').value = currentSettings.stop_loss_std_dev;
+            document.getElementById('position_size').value = currentSettings.position_size;
+            document.getElementById('paper_mode').checked = currentSettings.paper_mode;
+
+            document.getElementById('api_key').value = currentSettings.api_key || '';
+            document.getElementById('api_secret').value = currentSettings.api_secret || '';
+            document.getElementById('api_passphrase').value = currentSettings.api_passphrase || '';
+
+            updateLiveWarning();
+        } catch (error) {
+            console.error('Error loading settings:', error);
+        }
+    }
+
+    // Update live trading warning
+    function updateLiveWarning() {
+        const paperMode = document.getElementById('paper_mode').checked;
+        const warning = document.getElementById('live-warning');
+        warning.style.display = paperMode ? 'none' : 'block';
+    }
+
+    // Save settings
+    document.getElementById('settings-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const settings = {
+            symbol: document.getElementById('symbol').value,
+            lookback_periods: parseInt(document.getElementById('lookback_periods').value),
+            entry_std_dev: parseFloat(document.getElementById('entry_std_dev').value),
+            exit_std_dev: parseFloat(document.getElementById('exit_std_dev').value),
+            stop_loss_std_dev: parseFloat(document.getElementById('stop_loss_std_dev').value),
+            position_size: parseFloat(document.getElementById('position_size').value),
+            paper_mode: document.getElementById('paper_mode').checked
+        };
+
+        try {
+            const response = await fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(settings)
+            });
+
+            const result = await response.json();
+            showAlert(result.success ? 'success' : 'error',
+                      result.success ? 'Settings saved successfully!' : result.message);
+        } catch (error) {
+            showAlert('error', 'Error saving settings: ' + error);
+        }
+    });
+
+    // Save API credentials
+    document.getElementById('api-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const settings = {
+            api_key: document.getElementById('api_key').value,
+            api_secret: document.getElementById('api_secret').value,
+            api_passphrase: document.getElementById('api_passphrase').value
+        };
+
+        try {
+            const response = await fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(settings)
+            });
+
+            const result = await response.json();
+            showAlert(result.success ? 'success' : 'error',
+                      result.success ? 'API credentials saved!' : result.message);
+        } catch (error) {
+            showAlert('error', 'Error saving API credentials: ' + error);
+        }
+    });
+
+    // Bootstrap historical data
+    async function bootstrapData() {
+        const btn = document.getElementById('bootstrap-btn');
+        const result = document.getElementById('bootstrap-result');
+
+        btn.disabled = true;
+        btn.textContent = 'Fetching...';
+        result.style.display = 'none';
+
+        try {
+            const response = await fetch('/api/bootstrap', {
+                method: 'POST'
+            });
+            const data = await response.json();
+
+            result.style.display = 'block';
+            if (data.success) {
+                result.className = 'alert alert-success';
+                result.textContent = `Successfully fetched ${data.records} historical funding rates.`;
+            } else {
+                result.className = 'alert alert-error';
+                result.textContent = 'Failed to fetch historical data.';
+            }
+        } catch (error) {
+            result.style.display = 'block';
+            result.className = 'alert alert-error';
+            result.textContent = 'Error: ' + error;
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Fetch Historical Data';
+        }
+    }
+
+    // Show alert
+    function showAlert(type, message) {
+        const container = document.getElementById('alert-container');
+        const alert = document.createElement('div');
+        alert.className = `alert alert-${type}`;
+        alert.textContent = message;
+        container.innerHTML = '';
+        container.appendChild(alert);
+
+        setTimeout(() => {
+            alert.remove();
+        }, 5000);
+    }
+
+    // Initialize
+    document.addEventListener('DOMContentLoaded', () => {
+        loadSettings();
+
+        document.getElementById('paper_mode').addEventListener('change', updateLiveWarning);
+    });
+</script>
+{% endblock %}

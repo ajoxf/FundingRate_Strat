@@ -1,0 +1,370 @@
+{% extends "base.html" %}
+
+{% block title %}Trade History - Funding Rate Trading{% endblock %}
+
+{% block content %}
+<!-- Stats Summary -->
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">Trading Performance</span>
+    </div>
+    <div class="grid grid-4">
+        <div class="stat-box">
+            <div class="stat-label">Total Trades</div>
+            <div class="stat-value" id="total-trades">--</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-label">Win Rate</div>
+            <div class="stat-value" id="win-rate">--</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-label">Best Trade</div>
+            <div class="stat-value text-green" id="best-trade">--</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-label">Worst Trade</div>
+            <div class="stat-value text-red" id="worst-trade">--</div>
+        </div>
+    </div>
+    <div class="divider"></div>
+    <div class="grid grid-4">
+        <div class="stat-box">
+            <div class="stat-label">Total P&L</div>
+            <div class="stat-value" id="total-pnl">--</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-label">Price P&L</div>
+            <div class="stat-value" id="price-pnl">--</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-label">Funding P&L</div>
+            <div class="stat-value" id="funding-pnl">--</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-label">Avg P&L per Trade</div>
+            <div class="stat-value" id="avg-pnl">--</div>
+        </div>
+    </div>
+</div>
+
+<!-- Filters -->
+<div class="card">
+    <div class="flex justify-between items-center">
+        <div class="flex gap-2">
+            <button class="btn btn-secondary btn-sm filter-btn active" data-status="">All</button>
+            <button class="btn btn-secondary btn-sm filter-btn" data-status="open">Open</button>
+            <button class="btn btn-secondary btn-sm filter-btn" data-status="closed">Closed</button>
+        </div>
+        <div class="flex gap-2">
+            <select id="limit-select" class="form-control" style="width: auto;">
+                <option value="20">20 trades</option>
+                <option value="50" selected>50 trades</option>
+                <option value="100">100 trades</option>
+            </select>
+        </div>
+    </div>
+</div>
+
+<!-- Trades Table -->
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">Trade History</span>
+        <span class="text-muted" id="trade-count">-- trades</span>
+    </div>
+    <div style="overflow-x: auto;">
+        <table class="table" id="trades-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Symbol</th>
+                    <th>Side</th>
+                    <th>Entry Price</th>
+                    <th>Exit Price</th>
+                    <th>Entry Z</th>
+                    <th>Exit Z</th>
+                    <th>Price P&L</th>
+                    <th>Funding P&L</th>
+                    <th>Total P&L</th>
+                    <th>Funding Periods</th>
+                    <th>Status</th>
+                    <th>Exit Reason</th>
+                    <th>Entry Time</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="trades-body">
+                <tr>
+                    <td colspan="15" class="text-center text-muted p-4">Loading trades...</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Trade Details Modal -->
+<div id="trade-modal" class="modal" style="display: none;">
+    <div class="modal-content card" style="max-width: 600px; margin: 100px auto;">
+        <div class="card-header">
+            <span class="card-title">Trade Details</span>
+            <button class="btn btn-secondary btn-sm" onclick="closeModal()">&times;</button>
+        </div>
+        <div id="modal-body"></div>
+    </div>
+</div>
+
+<style>
+    .modal {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.7);
+        z-index: 1000;
+    }
+    .modal-content {
+        max-height: 80vh;
+        overflow-y: auto;
+    }
+    .filter-btn.active {
+        background-color: var(--accent-blue);
+        color: white;
+        border-color: var(--accent-blue);
+    }
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let currentFilter = '';
+    let currentLimit = 50;
+
+    // Fetch stats
+    async function fetchStats() {
+        try {
+            const response = await fetch('/api/stats');
+            const stats = await response.json();
+            updateStats(stats);
+        } catch (error) {
+            console.error('Error fetching stats:', error);
+        }
+    }
+
+    // Update stats display
+    function updateStats(stats) {
+        document.getElementById('total-trades').textContent = stats.total_trades || 0;
+        document.getElementById('win-rate').textContent = formatPercent(stats.win_rate || 0, 1);
+
+        const totalPnl = stats.total_pnl || 0;
+        const totalPnlEl = document.getElementById('total-pnl');
+        totalPnlEl.textContent = '$' + formatNumber(totalPnl, 2);
+        totalPnlEl.className = 'stat-value ' + (totalPnl >= 0 ? 'text-green' : 'text-red');
+
+        const pricePnl = stats.total_price_pnl || 0;
+        const pricePnlEl = document.getElementById('price-pnl');
+        pricePnlEl.textContent = '$' + formatNumber(pricePnl, 2);
+        pricePnlEl.className = 'stat-value ' + (pricePnl >= 0 ? 'text-green' : 'text-red');
+
+        const fundingPnl = stats.total_funding_pnl || 0;
+        const fundingPnlEl = document.getElementById('funding-pnl');
+        fundingPnlEl.textContent = '$' + formatNumber(fundingPnl, 2);
+        fundingPnlEl.className = 'stat-value ' + (fundingPnl >= 0 ? 'text-green' : 'text-red');
+
+        const avgPnl = stats.avg_pnl || 0;
+        const avgPnlEl = document.getElementById('avg-pnl');
+        avgPnlEl.textContent = '$' + formatNumber(avgPnl, 2);
+        avgPnlEl.className = 'stat-value ' + (avgPnl >= 0 ? 'text-green' : 'text-red');
+
+        const bestTrade = stats.best_trade || 0;
+        document.getElementById('best-trade').textContent = '$' + formatNumber(bestTrade, 2);
+
+        const worstTrade = stats.worst_trade || 0;
+        document.getElementById('worst-trade').textContent = '$' + formatNumber(worstTrade, 2);
+    }
+
+    // Fetch trades
+    async function fetchTrades() {
+        try {
+            let url = `/api/trades?limit=${currentLimit}`;
+            if (currentFilter) {
+                url += `&status=${currentFilter}`;
+            }
+
+            const response = await fetch(url);
+            const trades = await response.json();
+            updateTradesTable(trades);
+        } catch (error) {
+            console.error('Error fetching trades:', error);
+        }
+    }
+
+    // Update trades table
+    function updateTradesTable(trades) {
+        const tbody = document.getElementById('trades-body');
+        document.getElementById('trade-count').textContent = trades.length + ' trades';
+
+        if (trades.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="15" class="text-center text-muted p-4">No trades found</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = trades.map(trade => {
+            const sideClass = trade.side === 'long' ? 'badge-green' : 'badge-red';
+            const statusClass = trade.status === 'open' ? 'badge-yellow' : 'badge-blue';
+            const pnlClass = (trade.total_pnl || 0) >= 0 ? 'text-green' : 'text-red';
+
+            return `
+                <tr>
+                    <td>${trade.id}</td>
+                    <td>${trade.symbol}</td>
+                    <td><span class="badge ${sideClass}">${trade.side.toUpperCase()}</span></td>
+                    <td>$${formatNumber(trade.entry_price, 2)}</td>
+                    <td>${trade.exit_price ? '$' + formatNumber(trade.exit_price, 2) : '--'}</td>
+                    <td>${formatNumber(trade.entry_z_score, 2)}σ</td>
+                    <td>${trade.exit_z_score ? formatNumber(trade.exit_z_score, 2) + 'σ' : '--'}</td>
+                    <td class="${pnlClass}">$${formatNumber(trade.price_pnl || 0, 2)}</td>
+                    <td class="${pnlClass}">$${formatNumber(trade.funding_pnl || 0, 2)}</td>
+                    <td class="${pnlClass}"><strong>$${formatNumber(trade.total_pnl || 0, 2)}</strong></td>
+                    <td>${trade.funding_periods_held || 0}</td>
+                    <td><span class="badge ${statusClass}">${trade.status.toUpperCase()}</span></td>
+                    <td>${trade.exit_reason || '--'}</td>
+                    <td>${formatDateTime(trade.entry_time)}</td>
+                    <td>
+                        <button class="btn btn-secondary btn-sm" onclick="showTradeDetails(${trade.id})">Details</button>
+                        ${trade.status === 'open' ? `<button class="btn btn-danger btn-sm" onclick="closeTrade(${trade.id})">Close</button>` : ''}
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    // Show trade details
+    async function showTradeDetails(tradeId) {
+        const modal = document.getElementById('trade-modal');
+        const body = document.getElementById('modal-body');
+
+        // Get trade from table data or fetch
+        body.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+        modal.style.display = 'block';
+
+        try {
+            // Fetch funding payments for this trade
+            const response = await fetch(`/api/trade/${tradeId}/funding-payments`);
+            const payments = await response.json();
+
+            let paymentsHtml = '';
+            if (payments.length > 0) {
+                paymentsHtml = `
+                    <h4 class="mt-4 mb-2">Funding Payments</h4>
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Funding Rate</th>
+                                <th>Payment</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${payments.map(p => `
+                                <tr>
+                                    <td>${formatDateTime(p.funding_time)}</td>
+                                    <td>${formatPercent(p.funding_rate * 100, 4)}</td>
+                                    <td class="${p.payment_amount >= 0 ? 'text-green' : 'text-red'}">
+                                        $${formatNumber(p.payment_amount, 4)}
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+            } else {
+                paymentsHtml = '<p class="text-muted mt-4">No funding payments recorded for this trade.</p>';
+            }
+
+            body.innerHTML = `
+                <p class="text-muted">Trade ID: ${tradeId}</p>
+                ${paymentsHtml}
+            `;
+        } catch (error) {
+            body.innerHTML = '<p class="text-red">Error loading trade details</p>';
+        }
+    }
+
+    // Close modal
+    function closeModal() {
+        document.getElementById('trade-modal').style.display = 'none';
+    }
+
+    // Close trade
+    async function closeTrade(tradeId) {
+        if (!confirm('Close this trade?')) return;
+
+        try {
+            const response = await fetch('/api/manual-trade', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'close', trade_id: tradeId })
+            });
+
+            const result = await response.json();
+            if (result.success) {
+                fetchTrades();
+                fetchStats();
+            } else {
+                alert('Error: ' + result.message);
+            }
+        } catch (error) {
+            alert('Error closing trade: ' + error);
+        }
+    }
+
+    // Utility functions
+    function formatNumber(num, decimals = 2) {
+        if (num === null || num === undefined) return '0.00';
+        return parseFloat(num).toLocaleString(undefined, {
+            minimumFractionDigits: decimals,
+            maximumFractionDigits: decimals
+        });
+    }
+
+    function formatPercent(num, decimals = 2) {
+        if (num === null || num === undefined) return '0.00%';
+        return parseFloat(num).toFixed(decimals) + '%';
+    }
+
+    function formatDateTime(dateStr) {
+        if (!dateStr) return '--';
+        const date = new Date(dateStr);
+        return date.toLocaleDateString() + ' ' + date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    }
+
+    // Initialize
+    document.addEventListener('DOMContentLoaded', () => {
+        fetchStats();
+        fetchTrades();
+
+        // Filter buttons
+        document.querySelectorAll('.filter-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentFilter = btn.dataset.status;
+                fetchTrades();
+            });
+        });
+
+        // Limit select
+        document.getElementById('limit-select').addEventListener('change', (e) => {
+            currentLimit = parseInt(e.target.value);
+            fetchTrades();
+        });
+
+        // Close modal on outside click
+        document.getElementById('trade-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'trade-modal') {
+                closeModal();
+            }
+        });
+    });
+</script>
+{% endblock %}

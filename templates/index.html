@@ -1,0 +1,533 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Funding Rate Trading{% endblock %}
+
+{% block content %}
+<div class="grid grid-2">
+    <!-- Left Column: Main Info -->
+    <div>
+        <!-- Symbol Header -->
+        <div class="card">
+            <div class="flex justify-between items-center">
+                <div>
+                    <h1 id="symbol" style="font-size: 1.5rem; font-weight: 700;">Loading...</h1>
+                    <span class="text-muted">Perpetual Swap</span>
+                </div>
+                <div>
+                    <span id="funding-direction" class="badge badge-green">LOADING</span>
+                    <span id="paper-mode-badge" class="badge badge-yellow ml-2" style="display: none;">PAPER MODE</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Price & Funding Info -->
+        <div class="card">
+            <div class="grid grid-3">
+                <div class="stat-box">
+                    <div class="stat-label">Swap Price</div>
+                    <div class="stat-value" id="swap-price">--</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Funding Rate</div>
+                    <div class="stat-value" id="funding-rate">--</div>
+                    <div class="stat-subtext" id="funding-rate-raw">--</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Annualized</div>
+                    <div class="stat-value" id="annualized-rate">--</div>
+                </div>
+            </div>
+            <div class="divider"></div>
+            <div class="flex justify-center items-center gap-4">
+                <span class="text-muted">Next Funding In:</span>
+                <span class="countdown" id="countdown">--:--:--</span>
+            </div>
+        </div>
+
+        <!-- Z-Score Signal -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Z-Score Analysis</span>
+                <span id="data-points" class="text-muted">-- periods</span>
+            </div>
+            <div class="signal-box neutral" id="signal-box">
+                <div class="signal-title">Current Z-Score</div>
+                <div class="signal-value" id="z-score">--</div>
+                <div class="mt-2">
+                    <span id="signal-badge" class="badge badge-blue">NO SIGNAL</span>
+                </div>
+            </div>
+            <div class="divider"></div>
+            <div class="grid grid-2">
+                <div class="stat-box">
+                    <div class="stat-label">Mean Rate</div>
+                    <div class="stat-value text-blue" id="mean-rate">--</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Std Dev</div>
+                    <div class="stat-value text-purple" id="std-dev">--</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Entry/Exit Thresholds -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Signal Thresholds</span>
+            </div>
+            <table class="table">
+                <tr>
+                    <td><span class="badge badge-red">SHORT</span> Entry</td>
+                    <td class="text-right">&ge; +<span id="entry-high-std">2.0</span>&sigma;</td>
+                    <td class="text-right text-muted" id="entry-high-rate">--</td>
+                </tr>
+                <tr>
+                    <td><span class="badge badge-green">LONG</span> Entry</td>
+                    <td class="text-right">&le; -<span id="entry-low-std">2.0</span>&sigma;</td>
+                    <td class="text-right text-muted" id="entry-low-rate">--</td>
+                </tr>
+                <tr>
+                    <td>Exit (Mean Reversion)</td>
+                    <td class="text-right">&plusmn;<span id="exit-std">0.2</span>&sigma;</td>
+                    <td class="text-right text-muted">Near mean</td>
+                </tr>
+                <tr>
+                    <td>Stop Loss</td>
+                    <td class="text-right">&plusmn;<span id="stop-loss-std">6.0</span>&sigma;</td>
+                    <td class="text-right text-muted">Extreme deviation</td>
+                </tr>
+            </table>
+        </div>
+    </div>
+
+    <!-- Right Column: Position & Chart -->
+    <div>
+        <!-- Current Position -->
+        <div class="card" id="position-card">
+            <div class="card-header">
+                <span class="card-title">Current Position</span>
+                <div id="position-actions"></div>
+            </div>
+            <div id="position-content">
+                <div class="text-center text-muted p-4">
+                    <p>No open position</p>
+                    <div class="mt-4 flex justify-center gap-2">
+                        <button class="btn btn-success btn-sm" onclick="openPosition('long')">Open Long</button>
+                        <button class="btn btn-danger btn-sm" onclick="openPosition('short')">Open Short</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Chart -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Z-Score History</span>
+                <select id="chart-periods" class="form-control" style="width: auto;">
+                    <option value="30">30 periods</option>
+                    <option value="60">60 periods</option>
+                    <option value="90" selected>90 periods</option>
+                </select>
+            </div>
+            <div class="chart-container">
+                <canvas id="zscore-chart"></canvas>
+            </div>
+        </div>
+
+        <!-- Funding Rate Chart -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Funding Rate History</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="funding-chart"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Trading Stats -->
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">Trading Statistics</span>
+        <a href="/trades" class="btn btn-secondary btn-sm">View All Trades</a>
+    </div>
+    <div class="grid grid-4">
+        <div class="stat-box">
+            <div class="stat-label">Total Trades</div>
+            <div class="stat-value" id="total-trades">--</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-label">Win Rate</div>
+            <div class="stat-value" id="win-rate">--</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-label">Total P&L</div>
+            <div class="stat-value" id="total-pnl">--</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-label">Funding P&L</div>
+            <div class="stat-value" id="funding-pnl">--</div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let zscoreChart = null;
+    let fundingChart = null;
+    let dashboardData = null;
+
+    // Initialize charts
+    function initCharts() {
+        const chartOptions = {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    labels: { color: '#8b949e' }
+                }
+            },
+            scales: {
+                x: {
+                    grid: { color: '#30363d' },
+                    ticks: { color: '#8b949e' }
+                },
+                y: {
+                    grid: { color: '#30363d' },
+                    ticks: { color: '#8b949e' }
+                }
+            }
+        };
+
+        // Z-Score Chart
+        const zscoreCtx = document.getElementById('zscore-chart').getContext('2d');
+        zscoreChart = new Chart(zscoreCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Z-Score',
+                    data: [],
+                    borderColor: '#58a6ff',
+                    backgroundColor: 'rgba(88, 166, 255, 0.1)',
+                    fill: true,
+                    tension: 0.4
+                }, {
+                    label: 'Entry High',
+                    data: [],
+                    borderColor: '#f85149',
+                    borderDash: [5, 5],
+                    pointRadius: 0
+                }, {
+                    label: 'Entry Low',
+                    data: [],
+                    borderColor: '#3fb950',
+                    borderDash: [5, 5],
+                    pointRadius: 0
+                }]
+            },
+            options: chartOptions
+        });
+
+        // Funding Rate Chart
+        const fundingCtx = document.getElementById('funding-chart').getContext('2d');
+        fundingChart = new Chart(fundingCtx, {
+            type: 'bar',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Funding Rate (%)',
+                    data: [],
+                    backgroundColor: [],
+                    borderWidth: 0
+                }]
+            },
+            options: {
+                ...chartOptions,
+                plugins: {
+                    ...chartOptions.plugins,
+                    legend: { display: false }
+                }
+            }
+        });
+    }
+
+    // Fetch dashboard data
+    async function fetchDashboard() {
+        try {
+            const response = await fetch('/api/dashboard');
+            dashboardData = await response.json();
+            updateDashboard(dashboardData);
+        } catch (error) {
+            console.error('Error fetching dashboard:', error);
+        }
+    }
+
+    // Update dashboard display
+    function updateDashboard(data) {
+        // Symbol and direction
+        document.getElementById('symbol').textContent = data.symbol;
+        const dirBadge = document.getElementById('funding-direction');
+        if (data.funding_direction === 'POSITIVE') {
+            dirBadge.textContent = 'POSITIVE';
+            dirBadge.className = 'badge badge-green';
+        } else {
+            dirBadge.textContent = 'NEGATIVE';
+            dirBadge.className = 'badge badge-red';
+        }
+
+        // Paper mode badge
+        const paperBadge = document.getElementById('paper-mode-badge');
+        if (data.settings.paper_mode) {
+            paperBadge.style.display = 'inline-block';
+        } else {
+            paperBadge.style.display = 'none';
+        }
+
+        // Price and funding
+        document.getElementById('swap-price').textContent = '$' + formatNumber(data.swap_price, 2);
+        document.getElementById('funding-rate').textContent = formatPercent(data.funding_rate_pct, 4);
+        document.getElementById('funding-rate-raw').textContent = formatNumber(data.funding_rate, 6);
+        document.getElementById('annualized-rate').textContent = formatPercent(data.annualized_rate, 2);
+        document.getElementById('annualized-rate').className = 'stat-value ' +
+            (data.annualized_rate >= 0 ? 'text-green' : 'text-red');
+
+        // Countdown
+        document.getElementById('countdown').textContent = data.countdown;
+
+        // Z-Score
+        const zScore = data.z_score;
+        document.getElementById('z-score').textContent = formatNumber(zScore, 2) + 'σ';
+        document.getElementById('data-points').textContent = data.data_points + ' periods';
+
+        // Signal box styling
+        const signalBox = document.getElementById('signal-box');
+        const signalBadge = document.getElementById('signal-badge');
+
+        if (data.signal.action === 'open' && data.signal.type === 'short') {
+            signalBox.className = 'signal-box short';
+            signalBadge.textContent = 'SHORT SIGNAL';
+            signalBadge.className = 'badge badge-red';
+            document.getElementById('z-score').className = 'signal-value text-red';
+        } else if (data.signal.action === 'open' && data.signal.type === 'long') {
+            signalBox.className = 'signal-box long';
+            signalBadge.textContent = 'LONG SIGNAL';
+            signalBadge.className = 'badge badge-green';
+            document.getElementById('z-score').className = 'signal-value text-green';
+        } else if (data.signal.action === 'close') {
+            signalBox.className = 'signal-box neutral';
+            signalBadge.textContent = data.signal.type === 'stop_loss' ? 'STOP LOSS' : 'EXIT SIGNAL';
+            signalBadge.className = 'badge badge-yellow';
+            document.getElementById('z-score').className = 'signal-value text-yellow';
+        } else {
+            signalBox.className = 'signal-box neutral';
+            signalBadge.textContent = 'NO SIGNAL';
+            signalBadge.className = 'badge badge-blue';
+            document.getElementById('z-score').className = 'signal-value';
+        }
+
+        // Mean and Std Dev
+        document.getElementById('mean-rate').textContent = formatPercent(data.mean_rate_pct, 4);
+        document.getElementById('std-dev').textContent = formatPercent(data.std_dev_pct, 4);
+
+        // Thresholds
+        document.getElementById('entry-high-std').textContent = data.settings.entry_std_dev;
+        document.getElementById('entry-low-std').textContent = data.settings.entry_std_dev;
+        document.getElementById('exit-std').textContent = data.settings.exit_std_dev;
+        document.getElementById('stop-loss-std').textContent = data.settings.stop_loss_std_dev;
+        document.getElementById('entry-high-rate').textContent = formatPercent(data.entry_high_threshold_pct, 4);
+        document.getElementById('entry-low-rate').textContent = formatPercent(data.entry_low_threshold_pct, 4);
+
+        // Position
+        updatePosition(data.open_trade);
+    }
+
+    // Update position display
+    function updatePosition(trade) {
+        const content = document.getElementById('position-content');
+        const actions = document.getElementById('position-actions');
+
+        if (!trade) {
+            content.innerHTML = `
+                <div class="text-center text-muted p-4">
+                    <p>No open position</p>
+                    <div class="mt-4 flex justify-center gap-2">
+                        <button class="btn btn-success btn-sm" onclick="openPosition('long')">Open Long</button>
+                        <button class="btn btn-danger btn-sm" onclick="openPosition('short')">Open Short</button>
+                    </div>
+                </div>
+            `;
+            actions.innerHTML = '';
+            return;
+        }
+
+        const sideClass = trade.side === 'long' ? 'text-green' : 'text-red';
+        const sideBadge = trade.side === 'long' ? 'badge-green' : 'badge-red';
+
+        content.innerHTML = `
+            <div class="grid grid-2">
+                <div class="stat-box">
+                    <div class="stat-label">Side</div>
+                    <div class="stat-value ${sideClass}">${trade.side.toUpperCase()}</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Size</div>
+                    <div class="stat-value">${trade.position_size}</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Entry Price</div>
+                    <div class="stat-value">$${formatNumber(trade.entry_price, 2)}</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Entry Z-Score</div>
+                    <div class="stat-value">${formatNumber(trade.entry_z_score, 2)}σ</div>
+                </div>
+            </div>
+            <div class="divider"></div>
+            <div class="text-center text-muted">
+                Opened: ${new Date(trade.entry_time).toLocaleString()}
+            </div>
+        `;
+
+        actions.innerHTML = `<button class="btn btn-danger btn-sm" onclick="closePosition(${trade.id})">Close Position</button>`;
+    }
+
+    // Fetch chart data
+    async function fetchChartData() {
+        const periods = document.getElementById('chart-periods').value;
+        try {
+            const response = await fetch(`/api/chart-data?limit=${periods}`);
+            const data = await response.json();
+            updateCharts(data);
+        } catch (error) {
+            console.error('Error fetching chart data:', error);
+        }
+    }
+
+    // Update charts
+    function updateCharts(data) {
+        // Format labels as time
+        const labels = data.labels.map(ts => {
+            const date = new Date(ts);
+            return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' +
+                   date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+        });
+
+        // Z-Score chart
+        zscoreChart.data.labels = labels;
+        zscoreChart.data.datasets[0].data = data.z_scores;
+        zscoreChart.data.datasets[1].data = Array(data.z_scores.length).fill(data.entry_threshold);
+        zscoreChart.data.datasets[2].data = Array(data.z_scores.length).fill(-data.entry_threshold);
+        zscoreChart.update();
+
+        // Funding rate chart
+        fundingChart.data.labels = labels;
+        fundingChart.data.datasets[0].data = data.funding_rates;
+        fundingChart.data.datasets[0].backgroundColor = data.funding_rates.map(r =>
+            r >= 0 ? 'rgba(63, 185, 80, 0.7)' : 'rgba(248, 81, 73, 0.7)'
+        );
+        fundingChart.update();
+    }
+
+    // Fetch stats
+    async function fetchStats() {
+        try {
+            const response = await fetch('/api/stats');
+            const stats = await response.json();
+            updateStats(stats);
+        } catch (error) {
+            console.error('Error fetching stats:', error);
+        }
+    }
+
+    // Update stats display
+    function updateStats(stats) {
+        document.getElementById('total-trades').textContent = stats.total_trades || 0;
+        document.getElementById('win-rate').textContent = formatPercent(stats.win_rate || 0, 1);
+
+        const totalPnl = stats.total_pnl || 0;
+        const pnlEl = document.getElementById('total-pnl');
+        pnlEl.textContent = '$' + formatNumber(totalPnl, 2);
+        pnlEl.className = 'stat-value ' + (totalPnl >= 0 ? 'text-green' : 'text-red');
+
+        const fundingPnl = stats.total_funding_pnl || 0;
+        const fundingEl = document.getElementById('funding-pnl');
+        fundingEl.textContent = '$' + formatNumber(fundingPnl, 2);
+        fundingEl.className = 'stat-value ' + (fundingPnl >= 0 ? 'text-green' : 'text-red');
+    }
+
+    // Open position
+    async function openPosition(side) {
+        if (!confirm(`Open ${side.toUpperCase()} position?`)) return;
+
+        try {
+            const response = await fetch('/api/manual-trade', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'open', side: side })
+            });
+            const result = await response.json();
+            if (result.success) {
+                fetchDashboard();
+            } else {
+                alert('Error: ' + result.message);
+            }
+        } catch (error) {
+            alert('Error opening position: ' + error);
+        }
+    }
+
+    // Close position
+    async function closePosition(tradeId) {
+        if (!confirm('Close position?')) return;
+
+        try {
+            const response = await fetch('/api/manual-trade', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'close', trade_id: tradeId })
+            });
+            const result = await response.json();
+            if (result.success) {
+                fetchDashboard();
+                fetchStats();
+            } else {
+                alert('Error: ' + result.message);
+            }
+        } catch (error) {
+            alert('Error closing position: ' + error);
+        }
+    }
+
+    // Utility functions
+    function formatNumber(num, decimals = 2) {
+        if (num === null || num === undefined) return '--';
+        return parseFloat(num).toLocaleString(undefined, {
+            minimumFractionDigits: decimals,
+            maximumFractionDigits: decimals
+        });
+    }
+
+    function formatPercent(num, decimals = 2) {
+        if (num === null || num === undefined) return '--';
+        return parseFloat(num).toFixed(decimals) + '%';
+    }
+
+    // Initialize
+    document.addEventListener('DOMContentLoaded', () => {
+        initCharts();
+        fetchDashboard();
+        fetchChartData();
+        fetchStats();
+
+        // Auto-refresh every 30 seconds
+        setInterval(fetchDashboard, 30000);
+        setInterval(fetchChartData, 60000);
+
+        // Chart period change
+        document.getElementById('chart-periods').addEventListener('change', fetchChartData);
+    });
+</script>
+{% endblock %}
