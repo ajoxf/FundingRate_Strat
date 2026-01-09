@@ -11,46 +11,52 @@ Strategy Logic:
 - Z-Score <= -2.0σ (funding unusually LOW) → Go LONG to collect funding
 - Exit when Z-Score returns to ±0.2σ (mean reversion complete)
 - Stop Loss at ±6.0σ
+
+Funding Rate Mechanism:
+- Funding payments occur every 8 hours on OKX (00:00, 08:00, 16:00 UTC)
+- Positive funding rate: LONGS pay SHORTS (go SHORT to receive payment)
+- Negative funding rate: SHORTS pay LONGS (go LONG to receive payment)
+- Payment = Position Size × Funding Rate
 """
 
 import os
-import json
-import time
-import hmac
-import base64
-import hashlib
 import sqlite3
-import threading
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, List, Tuple, Any
+from datetime import datetime, timezone
+from typing import Optional, Dict, List
 
-import requests
+from dotenv import load_dotenv
 from flask import Flask, render_template, jsonify, request, g
 from apscheduler.schedulers.background import BackgroundScheduler
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Import modular components
+from app.api import OKXClient, create_okx_client
 
 # =============================================================================
 # Configuration
 # =============================================================================
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
+app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', 'dev-secret-key-change-in-production')
 
-DATABASE = 'funding_rate.db'
-OKX_BASE_URL = 'https://www.okx.com'
+DATABASE = os.environ.get('DATABASE_PATH', 'funding_rate.db')
 
-# Default Settings
+# Default Settings (can be overridden by environment variables or database)
 DEFAULT_SETTINGS = {
-    'symbol': 'BTC-USDT-SWAP',
-    'lookback_periods': 90,  # 90 x 8 hours = 720 hours = 30 days
-    'entry_std_dev': 2.0,
-    'exit_std_dev': 0.2,
-    'stop_loss_std_dev': 6.0,
-    'position_size': 1.0,  # Contract size
-    'paper_mode': True,
-    'api_key': '',
-    'api_secret': '',
-    'api_passphrase': '',
+    'symbol': os.environ.get('TRADING_SYMBOL', 'BTC-USDT-SWAP'),
+    'lookback_periods': int(os.environ.get('LOOKBACK_PERIODS', 90)),
+    'entry_std_dev': float(os.environ.get('ENTRY_STD_DEV', 2.0)),
+    'exit_std_dev': float(os.environ.get('EXIT_STD_DEV', 0.2)),
+    'stop_loss_std_dev': float(os.environ.get('STOP_LOSS_STD_DEV', 6.0)),
+    'position_size': float(os.environ.get('POSITION_SIZE', 1.0)),
+    'paper_mode': os.environ.get('PAPER_MODE', 'true').lower() == 'true',
+    'api_key': os.environ.get('OKX_API_KEY', ''),
+    'api_secret': os.environ.get('OKX_API_SECRET', ''),
+    'api_passphrase': os.environ.get('OKX_PASSPHRASE', ''),
 }
+
 
 # =============================================================================
 # Database Functions
@@ -132,7 +138,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY,
             symbol TEXT NOT NULL,
-            side TEXT NOT NULL,  -- 'long' or 'short'
+            side TEXT NOT NULL,
             entry_price REAL NOT NULL,
             exit_price REAL,
             entry_funding_rate REAL,
@@ -144,10 +150,10 @@ def init_db():
             funding_pnl REAL DEFAULT 0,
             total_pnl REAL DEFAULT 0,
             funding_periods_held INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'open',  -- 'open', 'closed', 'stopped'
+            status TEXT DEFAULT 'open',
             entry_time TIMESTAMP NOT NULL,
             exit_time TIMESTAMP,
-            exit_reason TEXT,  -- 'mean_reversion', 'stop_loss', 'manual'
+            exit_reason TEXT,
             paper_trade INTEGER DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -182,12 +188,21 @@ def init_db():
     if cursor.fetchone()[0] == 0:
         cursor.execute('''
             INSERT INTO settings (symbol, lookback_periods, entry_std_dev,
-                                  exit_std_dev, stop_loss_std_dev, position_size, paper_mode)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (DEFAULT_SETTINGS['symbol'], DEFAULT_SETTINGS['lookback_periods'],
-              DEFAULT_SETTINGS['entry_std_dev'], DEFAULT_SETTINGS['exit_std_dev'],
-              DEFAULT_SETTINGS['stop_loss_std_dev'], DEFAULT_SETTINGS['position_size'],
-              1 if DEFAULT_SETTINGS['paper_mode'] else 0))
+                                  exit_std_dev, stop_loss_std_dev, position_size, paper_mode,
+                                  api_key, api_secret, api_passphrase)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            DEFAULT_SETTINGS['symbol'],
+            DEFAULT_SETTINGS['lookback_periods'],
+            DEFAULT_SETTINGS['entry_std_dev'],
+            DEFAULT_SETTINGS['exit_std_dev'],
+            DEFAULT_SETTINGS['stop_loss_std_dev'],
+            DEFAULT_SETTINGS['position_size'],
+            1 if DEFAULT_SETTINGS['paper_mode'] else 0,
+            DEFAULT_SETTINGS['api_key'],
+            DEFAULT_SETTINGS['api_secret'],
+            DEFAULT_SETTINGS['api_passphrase'],
+        ))
 
     conn.commit()
     conn.close()
@@ -259,224 +274,19 @@ def save_settings(settings: Dict) -> bool:
 
 
 # =============================================================================
-# OKX API Client
+# OKX Client Management
 # =============================================================================
 
-class OKXClient:
-    """OKX API Client for funding rate and trading operations."""
-
-    def __init__(self, api_key: str = '', api_secret: str = '', passphrase: str = ''):
-        self.api_key = api_key
-        self.api_secret = api_secret
-        self.passphrase = passphrase
-        self.base_url = OKX_BASE_URL
-        self.session = requests.Session()
-
-    def _get_timestamp(self) -> str:
-        """Get ISO format timestamp for API requests."""
-        return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
-
-    def _sign(self, timestamp: str, method: str, path: str, body: str = '') -> str:
-        """Generate signature for authenticated requests."""
-        message = timestamp + method.upper() + path + body
-        mac = hmac.new(
-            self.api_secret.encode('utf-8'),
-            message.encode('utf-8'),
-            hashlib.sha256
-        )
-        return base64.b64encode(mac.digest()).decode('utf-8')
-
-    def _get_headers(self, method: str, path: str, body: str = '') -> Dict:
-        """Get headers for authenticated requests."""
-        timestamp = self._get_timestamp()
-        headers = {
-            'Content-Type': 'application/json',
-        }
-        if self.api_key:
-            headers.update({
-                'OK-ACCESS-KEY': self.api_key,
-                'OK-ACCESS-SIGN': self._sign(timestamp, method, path, body),
-                'OK-ACCESS-TIMESTAMP': timestamp,
-                'OK-ACCESS-PASSPHRASE': self.passphrase,
-            })
-        return headers
-
-    def _request(self, method: str, path: str, params: Dict = None,
-                 data: Dict = None) -> Dict:
-        """Make API request."""
-        url = self.base_url + path
-        body = json.dumps(data) if data else ''
-        headers = self._get_headers(method, path, body)
-
-        try:
-            if method.upper() == 'GET':
-                response = self.session.get(url, params=params, headers=headers, timeout=10)
-            else:
-                response = self.session.post(url, data=body, headers=headers, timeout=10)
-
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            print(f"API request error: {e}")
-            return {'code': '-1', 'msg': str(e), 'data': []}
-
-    def get_funding_rate(self, symbol: str) -> Dict:
-        """
-        Get current funding rate for a symbol.
-        GET /api/v5/public/funding-rate
-        """
-        path = '/api/v5/public/funding-rate'
-        params = {'instId': symbol}
-        result = self._request('GET', path, params=params)
-
-        if result.get('code') == '0' and result.get('data'):
-            data = result['data'][0]
-            return {
-                'symbol': data.get('instId'),
-                'funding_rate': float(data.get('fundingRate', 0)),
-                'next_funding_rate': float(data.get('nextFundingRate', 0)) if data.get('nextFundingRate') else None,
-                'funding_time': int(data.get('fundingTime', 0)),
-                'next_funding_time': int(data.get('nextFundingTime', 0)),
-            }
-        return {}
-
-    def get_funding_rate_history(self, symbol: str, limit: int = 100,
-                                  before: str = None, after: str = None) -> List[Dict]:
-        """
-        Get historical funding rates.
-        GET /api/v5/public/funding-rate-history
-        Max 100 records per call.
-        """
-        path = '/api/v5/public/funding-rate-history'
-        params = {'instId': symbol, 'limit': str(limit)}
-        if before:
-            params['before'] = before
-        if after:
-            params['after'] = after
-
-        result = self._request('GET', path, params=params)
-
-        if result.get('code') == '0' and result.get('data'):
-            return [
-                {
-                    'symbol': item.get('instId'),
-                    'funding_rate': float(item.get('fundingRate', 0)),
-                    'realized_rate': float(item.get('realizedRate', 0)) if item.get('realizedRate') else None,
-                    'funding_time': int(item.get('fundingTime', 0)),
-                }
-                for item in result['data']
-            ]
-        return []
-
-    def get_ticker(self, symbol: str) -> Dict:
-        """
-        Get ticker data for swap price.
-        GET /api/v5/market/ticker
-        """
-        path = '/api/v5/market/ticker'
-        params = {'instId': symbol}
-        result = self._request('GET', path, params=params)
-
-        if result.get('code') == '0' and result.get('data'):
-            data = result['data'][0]
-            return {
-                'symbol': data.get('instId'),
-                'last_price': float(data.get('last', 0)),
-                'bid_price': float(data.get('bidPx', 0)),
-                'ask_price': float(data.get('askPx', 0)),
-                'high_24h': float(data.get('high24h', 0)),
-                'low_24h': float(data.get('low24h', 0)),
-                'volume_24h': float(data.get('vol24h', 0)),
-                'timestamp': int(data.get('ts', 0)),
-            }
-        return {}
-
-    def get_positions(self, symbol: str = None) -> List[Dict]:
-        """
-        Get current positions.
-        GET /api/v5/account/positions
-        Requires authentication.
-        """
-        path = '/api/v5/account/positions'
-        params = {}
-        if symbol:
-            params['instId'] = symbol
-
-        result = self._request('GET', path, params=params)
-
-        if result.get('code') == '0' and result.get('data'):
-            return [
-                {
-                    'symbol': pos.get('instId'),
-                    'position_side': pos.get('posSide'),
-                    'position_size': float(pos.get('pos', 0)),
-                    'avg_price': float(pos.get('avgPx', 0)) if pos.get('avgPx') else 0,
-                    'unrealized_pnl': float(pos.get('upl', 0)) if pos.get('upl') else 0,
-                    'leverage': float(pos.get('lever', 1)),
-                    'liquidation_price': float(pos.get('liqPx', 0)) if pos.get('liqPx') else 0,
-                    'margin': float(pos.get('margin', 0)) if pos.get('margin') else 0,
-                }
-                for pos in result['data']
-            ]
-        return []
-
-    def place_order(self, symbol: str, side: str, size: float,
-                   order_type: str = 'market', price: float = None) -> Dict:
-        """
-        Place an order.
-        POST /api/v5/trade/order
-
-        Args:
-            symbol: Instrument ID (e.g., 'BTC-USDT-SWAP')
-            side: 'buy' or 'sell'
-            size: Position size
-            order_type: 'market' or 'limit'
-            price: Required for limit orders
-        """
-        path = '/api/v5/trade/order'
-        data = {
-            'instId': symbol,
-            'tdMode': 'cross',  # Cross margin mode
-            'side': side,
-            'ordType': order_type,
-            'sz': str(size),
-        }
-        if order_type == 'limit' and price:
-            data['px'] = str(price)
-
-        result = self._request('POST', path, data=data)
-
-        if result.get('code') == '0' and result.get('data'):
-            order_data = result['data'][0]
-            return {
-                'order_id': order_data.get('ordId'),
-                'client_order_id': order_data.get('clOrdId'),
-                'success': order_data.get('sCode') == '0',
-                'message': order_data.get('sMsg', ''),
-            }
-        return {'success': False, 'message': result.get('msg', 'Unknown error')}
-
-    def close_position(self, symbol: str, position_side: str = 'net') -> Dict:
-        """
-        Close all positions for a symbol.
-        POST /api/v5/trade/close-position
-        """
-        path = '/api/v5/trade/close-position'
-        data = {
-            'instId': symbol,
-            'mgnMode': 'cross',
-            'posSide': position_side,
-        }
-
-        result = self._request('POST', path, data=data)
-
-        if result.get('code') == '0':
-            return {'success': True, 'message': 'Position closed'}
-        return {'success': False, 'message': result.get('msg', 'Unknown error')}
-
-
 # Global OKX client instance
-okx_client = OKXClient()
+okx_client: Optional[OKXClient] = None
+
+
+def get_okx_client() -> OKXClient:
+    """Get or create OKX client with current settings."""
+    global okx_client
+    if okx_client is None:
+        update_okx_client()
+    return okx_client
 
 
 def update_okx_client():
@@ -488,6 +298,7 @@ def update_okx_client():
         api_secret=settings.get('api_secret', ''),
         passphrase=settings.get('api_passphrase', '')
     )
+    return okx_client
 
 
 # =============================================================================
@@ -497,6 +308,12 @@ def update_okx_client():
 def calculate_z_score(funding_rates: List[float]) -> Dict:
     """
     Calculate Z-score from a list of funding rates.
+
+    The Z-score measures how many standard deviations the current
+    funding rate is from the historical mean.
+
+    Args:
+        funding_rates: List of funding rates, with current rate at index 0
 
     Returns:
         Dict with z_score, mean, std_dev, current_rate
@@ -512,10 +329,12 @@ def calculate_z_score(funding_rates: List[float]) -> Dict:
     current_rate = funding_rates[0]
     historical_rates = funding_rates[1:]  # Exclude current for calculation
 
+    # Calculate mean and standard deviation
     mean = sum(historical_rates) / len(historical_rates)
     variance = sum((r - mean) ** 2 for r in historical_rates) / len(historical_rates)
     std_dev = variance ** 0.5
 
+    # Calculate Z-score
     if std_dev == 0:
         z_score = 0
     else:
@@ -533,13 +352,19 @@ def get_signal(z_score: float, settings: Dict, current_position: str = None) -> 
     """
     Determine trading signal based on Z-score and current position.
 
+    Strategy:
+    - Z >= +entry_std_dev: HIGH funding → Go SHORT (collect funding)
+    - Z <= -entry_std_dev: LOW funding → Go LONG (collect funding)
+    - |Z| <= exit_std_dev: Mean reversion complete → EXIT
+    - |Z| >= stop_loss_std_dev: Extreme deviation → STOP LOSS
+
     Args:
         z_score: Current Z-score
         settings: Strategy settings
         current_position: 'long', 'short', or None
 
     Returns:
-        Dict with signal type and details
+        Dict with action, type, reason, and z_score
     """
     entry_threshold = settings['entry_std_dev']
     exit_threshold = settings['exit_std_dev']
@@ -554,25 +379,27 @@ def get_signal(z_score: float, settings: Dict, current_position: str = None) -> 
 
     # If we have a position, check for exit signals first
     if current_position == 'short':
-        # Short position: exit if Z-score returns to mean or hits stop loss
+        # Short position: entered because funding was HIGH (positive Z)
+        # Exit if Z-score returns to mean OR if Z goes extremely negative
         if abs(z_score) <= exit_threshold:
             signal['action'] = 'close'
             signal['type'] = 'exit'
             signal['reason'] = 'mean_reversion'
         elif z_score <= -stop_loss_threshold:
-            # Z-score went very negative (funding went negative) - stop loss
+            # Z-score went very negative - funding reversed extremely
             signal['action'] = 'close'
             signal['type'] = 'stop_loss'
             signal['reason'] = 'stop_loss'
 
     elif current_position == 'long':
-        # Long position: exit if Z-score returns to mean or hits stop loss
+        # Long position: entered because funding was LOW (negative Z)
+        # Exit if Z-score returns to mean OR if Z goes extremely positive
         if abs(z_score) <= exit_threshold:
             signal['action'] = 'close'
             signal['type'] = 'exit'
             signal['reason'] = 'mean_reversion'
         elif z_score >= stop_loss_threshold:
-            # Z-score went very positive (funding went positive) - stop loss
+            # Z-score went very positive - funding reversed extremely
             signal['action'] = 'close'
             signal['type'] = 'stop_loss'
             signal['reason'] = 'stop_loss'
@@ -580,15 +407,17 @@ def get_signal(z_score: float, settings: Dict, current_position: str = None) -> 
     else:
         # No position - check for entry signals
         if z_score >= entry_threshold:
-            # High funding rate - go SHORT to collect funding
+            # High funding rate (positive Z) → go SHORT to COLLECT funding
+            # When funding is positive, shorts receive payment
             signal['action'] = 'open'
             signal['type'] = 'short'
-            signal['reason'] = f'Z-score {z_score:.2f} >= {entry_threshold}'
+            signal['reason'] = f'Z-score {z_score:.2f} >= {entry_threshold} (HIGH funding)'
         elif z_score <= -entry_threshold:
-            # Low funding rate - go LONG to collect funding
+            # Low funding rate (negative Z) → go LONG to COLLECT funding
+            # When funding is negative, longs receive payment
             signal['action'] = 'open'
             signal['type'] = 'long'
-            signal['reason'] = f'Z-score {z_score:.2f} <= -{entry_threshold}'
+            signal['reason'] = f'Z-score {z_score:.2f} <= -{entry_threshold} (LOW funding)'
 
     return signal
 
@@ -596,49 +425,44 @@ def get_signal(z_score: float, settings: Dict, current_position: str = None) -> 
 def calculate_annualized_rate(funding_rate: float) -> float:
     """
     Calculate annualized funding rate.
-    Funding is paid every 8 hours = 3 times per day = 1095 times per year.
+
+    OKX funding is paid every 8 hours:
+    - 3 times per day
+    - 1095 times per year (3 × 365)
+
+    Args:
+        funding_rate: Single funding rate as decimal (e.g., 0.0001)
+
+    Returns:
+        Annualized rate as percentage (e.g., 10.95 for 10.95%)
     """
-    return funding_rate * 3 * 365 * 100  # Return as percentage
+    return funding_rate * 3 * 365 * 100
 
 
 # =============================================================================
 # Data Collection
 # =============================================================================
 
-def bootstrap_funding_history(symbol: str, periods: int = 90):
+def bootstrap_funding_history(symbol: str, periods: int = 90) -> int:
     """
     Fetch historical funding rates on startup.
-    OKX allows max 100 records per call, so we may need multiple calls.
+
+    OKX allows max 100 records per API call, so we may need multiple
+    calls to fetch the full history.
+
+    Args:
+        symbol: Trading symbol (e.g., 'BTC-USDT-SWAP')
+        periods: Number of funding periods to fetch (default 90 = 30 days)
+
+    Returns:
+        Number of records fetched
     """
+    client = get_okx_client()
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    all_rates = []
-    before_ts = None
-
-    # Fetch funding rate history (may need multiple calls for 90 periods)
-    remaining = periods
-    while remaining > 0:
-        limit = min(remaining, 100)
-        rates = okx_client.get_funding_rate_history(
-            symbol,
-            limit=limit,
-            before=before_ts
-        )
-
-        if not rates:
-            break
-
-        all_rates.extend(rates)
-        remaining -= len(rates)
-
-        # Get the oldest timestamp for next pagination
-        if rates:
-            before_ts = str(rates[-1]['funding_time'])
-
-        # Safety check to avoid infinite loop
-        if len(rates) < limit:
-            break
+    # Use the client's built-in pagination helper
+    all_rates = client.get_funding_rate_history_all(symbol, periods)
 
     # Store in database
     for rate in all_rates:
@@ -652,7 +476,7 @@ def bootstrap_funding_history(symbol: str, periods: int = 90):
                 rate['symbol'],
                 rate['funding_rate'],
                 funding_time.isoformat(),
-                rate['realized_rate'],
+                rate.get('realized_rate'),
             ))
         except sqlite3.IntegrityError:
             pass  # Ignore duplicates
@@ -665,18 +489,27 @@ def bootstrap_funding_history(symbol: str, periods: int = 90):
 
 
 def update_funding_data():
-    """Update funding rate data - called periodically."""
+    """
+    Update funding rate data - called periodically by scheduler.
+
+    This function:
+    1. Fetches current funding rate and swap price
+    2. Calculates Z-score against historical data
+    3. Stores the data point
+    4. Checks for trading signals
+    """
     settings = get_settings()
     symbol = settings['symbol']
+    client = get_okx_client()
 
-    # Get current funding rate
-    funding_data = okx_client.get_funding_rate(symbol)
+    # Get current funding rate from OKX
+    funding_data = client.get_funding_rate(symbol)
     if not funding_data:
-        print("Failed to fetch funding rate")
+        print(f"Failed to fetch funding rate for {symbol}")
         return
 
     # Get current ticker for swap price
-    ticker = okx_client.get_ticker(symbol)
+    ticker = client.get_ticker(symbol)
     swap_price = ticker.get('last_price', 0) if ticker else 0
 
     # Get historical rates for Z-score calculation
@@ -732,7 +565,12 @@ def update_funding_data():
 
 def check_and_execute_signals(z_data: Dict, funding_data: Dict,
                               ticker: Dict, settings: Dict):
-    """Check for trading signals and execute if applicable."""
+    """
+    Check for trading signals and execute if applicable.
+
+    This function is called after each data update to evaluate
+    whether to open or close positions based on Z-score signals.
+    """
     symbol = settings['symbol']
 
     # Get current open trade
@@ -781,17 +619,35 @@ def check_and_execute_signals(z_data: Dict, funding_data: Dict,
         )
 
 
+# =============================================================================
+# Trade Execution
+# =============================================================================
+
 def execute_open_trade(symbol: str, side: str, price: float,
                        funding_rate: float, z_score: float,
                        size: float, paper_mode: bool):
-    """Execute opening a new trade."""
+    """
+    Execute opening a new trade.
+
+    Args:
+        symbol: Trading symbol
+        side: 'long' or 'short'
+        price: Current swap price
+        funding_rate: Current funding rate
+        z_score: Current Z-score
+        size: Position size in contracts
+        paper_mode: If True, simulate trade without real order
+    """
     conn = get_db_connection()
     cursor = conn.cursor()
+    client = get_okx_client()
 
     # Execute actual order if not paper trading
     if not paper_mode:
+        # For SHORT: sell to open
+        # For LONG: buy to open
         order_side = 'sell' if side == 'short' else 'buy'
-        result = okx_client.place_order(symbol, order_side, size)
+        result = client.place_order(symbol, order_side, size)
         if not result.get('success'):
             print(f"Failed to place order: {result.get('message')}")
             conn.close()
@@ -811,14 +667,25 @@ def execute_open_trade(symbol: str, side: str, price: float,
 
     conn.commit()
     conn.close()
-    print(f"Opened {side.upper()} position at {price} (Z-score: {z_score:.2f})")
+    print(f"{'[PAPER] ' if paper_mode else ''}Opened {side.upper()} position at ${price:.2f} (Z-score: {z_score:.2f}σ)")
 
 
 def execute_close_trade(trade_id: int, price: float, funding_rate: float,
                         z_score: float, reason: str, paper_mode: bool):
-    """Execute closing an existing trade."""
+    """
+    Execute closing an existing trade.
+
+    Args:
+        trade_id: Database ID of trade to close
+        price: Current swap price
+        funding_rate: Current funding rate
+        z_score: Current Z-score
+        reason: Exit reason ('mean_reversion', 'stop_loss', 'manual')
+        paper_mode: If True, simulate trade without real order
+    """
     conn = get_db_connection()
     cursor = conn.cursor()
+    client = get_okx_client()
 
     # Get trade details
     cursor.execute('SELECT * FROM trades WHERE id = ?', (trade_id,))
@@ -835,13 +702,15 @@ def execute_close_trade(trade_id: int, price: float, funding_rate: float,
 
     # Execute actual order if not paper trading
     if not paper_mode:
-        result = okx_client.close_position(symbol)
+        result = client.close_position(symbol)
         if not result.get('success'):
             print(f"Failed to close position: {result.get('message')}")
             conn.close()
             return
 
     # Calculate P&L
+    # For LONG: profit when price goes UP
+    # For SHORT: profit when price goes DOWN
     if side == 'long':
         price_pnl = (price - entry_price) * size
     else:  # short
@@ -886,14 +755,35 @@ def execute_close_trade(trade_id: int, price: float, funding_rate: float,
 
     conn.commit()
     conn.close()
-    print(f"Closed {side.upper()} position at {price} (P&L: {total_pnl:.2f}, Reason: {reason})")
+
+    paper_prefix = '[PAPER] ' if trade['paper_trade'] else ''
+    print(f"{paper_prefix}Closed {side.upper()} position at ${price:.2f}")
+    print(f"  Price P&L: ${price_pnl:.2f}, Funding P&L: ${funding_pnl:.2f}, Total: ${total_pnl:.2f}")
+    print(f"  Reason: {reason}, Held for {periods} funding periods")
 
 
 def record_funding_payment(trade_id: int, symbol: str, funding_rate: float,
                            position_size: float, side: str):
-    """Record a funding payment for an open position."""
-    # For shorts: positive funding = receive payment, negative = pay
-    # For longs: positive funding = pay, negative = receive payment
+    """
+    Record a funding payment for an open position.
+
+    Funding payment logic:
+    - Positive funding rate: LONGS pay SHORTS
+      - SHORT position receives: +funding_rate × size
+      - LONG position pays: -funding_rate × size
+    - Negative funding rate: SHORTS pay LONGS
+      - SHORT position pays: +funding_rate × size (negative, so pays)
+      - LONG position receives: -funding_rate × size (negative, so receives)
+
+    Args:
+        trade_id: Database ID of open trade
+        symbol: Trading symbol
+        funding_rate: Current funding rate (positive or negative)
+        position_size: Position size in contracts
+        side: 'long' or 'short'
+    """
+    # For shorts: payment = +rate * size (receive when rate positive)
+    # For longs: payment = -rate * size (receive when rate negative)
     if side == 'short':
         payment = funding_rate * position_size
     else:  # long
@@ -907,6 +797,9 @@ def record_funding_payment(trade_id: int, symbol: str, funding_rate: float,
     ''', (trade_id, symbol, funding_rate, payment, datetime.now(timezone.utc).isoformat()))
     conn.commit()
     conn.close()
+
+    direction = "received" if payment > 0 else "paid"
+    print(f"Funding payment {direction}: ${abs(payment):.4f} (rate: {funding_rate*100:.4f}%)")
 
 
 # =============================================================================
@@ -936,10 +829,11 @@ def api_dashboard():
     """Get dashboard data including current funding rate and Z-score."""
     settings = get_settings()
     symbol = settings['symbol']
+    client = get_okx_client()
 
     # Get current funding rate from OKX
-    funding_data = okx_client.get_funding_rate(symbol)
-    ticker = okx_client.get_ticker(symbol)
+    funding_data = client.get_funding_rate(symbol)
+    ticker = client.get_ticker(symbol)
 
     # Get historical rates for Z-score
     conn = get_db_connection()
@@ -1145,10 +1039,11 @@ def api_manual_trade():
     data = request.get_json()
     action = data.get('action')  # 'open' or 'close'
     settings = get_settings()
+    client = get_okx_client()
 
     # Get current market data
-    ticker = okx_client.get_ticker(settings['symbol'])
-    funding_data = okx_client.get_funding_rate(settings['symbol'])
+    ticker = client.get_ticker(settings['symbol'])
+    funding_data = client.get_funding_rate(settings['symbol'])
 
     if not ticker or not funding_data:
         return jsonify({'success': False, 'message': 'Failed to fetch market data'}), 500
@@ -1271,17 +1166,26 @@ def start_scheduler():
     )
 
     scheduler.start()
-    print("Scheduler started")
+    print("Background scheduler started")
+    print("  - Data update: every 1 minute")
+    print("  - Funding check: 00:05, 08:05, 16:05 UTC")
 
 
 def check_funding_payments():
-    """Check and record funding payments for open positions."""
+    """
+    Check and record funding payments for open positions.
+
+    This runs 5 minutes after each funding time (00:05, 08:05, 16:05 UTC)
+    to ensure the funding has been settled before recording.
+    """
     settings = get_settings()
     symbol = settings['symbol']
+    client = get_okx_client()
 
     # Get current funding rate
-    funding_data = okx_client.get_funding_rate(symbol)
+    funding_data = client.get_funding_rate(symbol)
     if not funding_data:
+        print("Failed to fetch funding rate for payment check")
         return
 
     # Get open trades
@@ -1292,6 +1196,11 @@ def check_funding_payments():
     ''', (symbol,))
     open_trades = cursor.fetchall()
     conn.close()
+
+    if not open_trades:
+        return
+
+    print(f"Recording funding payments for {len(open_trades)} open position(s)")
 
     # Record funding payment for each open trade
     for trade in open_trades:
@@ -1308,21 +1217,51 @@ def check_funding_payments():
 # Main Entry Point
 # =============================================================================
 
-if __name__ == '__main__':
+def main():
+    """Main entry point for the trading system."""
+    print("=" * 60)
+    print("OKX Funding Rate Mean Reversion Trading System")
+    print("=" * 60)
+
     # Initialize database
+    print("\nInitializing database...")
     init_db()
 
     # Update OKX client with settings
+    print("Configuring OKX client...")
     update_okx_client()
 
     # Bootstrap historical data
     settings = get_settings()
-    print(f"Bootstrapping funding rate history for {settings['symbol']}...")
+    print(f"\nBootstrapping funding rate history for {settings['symbol']}...")
     bootstrap_funding_history(settings['symbol'], settings['lookback_periods'])
 
     # Start scheduler
+    print("\nStarting background scheduler...")
     start_scheduler()
 
+    # Display configuration
+    print("\n" + "-" * 60)
+    print("Configuration:")
+    print(f"  Symbol: {settings['symbol']}")
+    print(f"  Lookback: {settings['lookback_periods']} periods ({settings['lookback_periods'] * 8 / 24:.0f} days)")
+    print(f"  Entry threshold: ±{settings['entry_std_dev']}σ")
+    print(f"  Exit threshold: ±{settings['exit_std_dev']}σ")
+    print(f"  Stop loss: ±{settings['stop_loss_std_dev']}σ")
+    print(f"  Position size: {settings['position_size']} contracts")
+    print(f"  Mode: {'PAPER TRADING' if settings['paper_mode'] else 'LIVE TRADING'}")
+    print("-" * 60)
+
     # Run Flask app
-    print("Starting Funding Rate Mean Reversion Trading System...")
-    app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)
+    host = os.environ.get('HOST', '0.0.0.0')
+    port = int(os.environ.get('PORT', 5000))
+    debug = os.environ.get('FLASK_DEBUG', 'true').lower() == 'true'
+
+    print(f"\nStarting web server on http://{host}:{port}")
+    print("Press Ctrl+C to stop\n")
+
+    app.run(host=host, port=port, debug=debug, use_reloader=False)
+
+
+if __name__ == '__main__':
+    main()
