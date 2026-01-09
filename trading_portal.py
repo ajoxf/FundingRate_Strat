@@ -55,6 +55,10 @@ DEFAULT_SETTINGS = {
     'api_key': os.environ.get('OKX_API_KEY', ''),
     'api_secret': os.environ.get('OKX_API_SECRET', ''),
     'api_passphrase': os.environ.get('OKX_PASSPHRASE', ''),
+    # Fee settings (as percentages, e.g., 0.02 = 0.02%)
+    'maker_fee': float(os.environ.get('MAKER_FEE', 0.02)),
+    'taker_fee': float(os.environ.get('TAKER_FEE', 0.05)),
+    'estimated_slippage': float(os.environ.get('ESTIMATED_SLIPPAGE', 0.01)),
 }
 
 
@@ -105,10 +109,27 @@ def init_db():
             api_key TEXT DEFAULT '',
             api_secret TEXT DEFAULT '',
             api_passphrase TEXT DEFAULT '',
+            maker_fee REAL DEFAULT 0.02,
+            taker_fee REAL DEFAULT 0.05,
+            estimated_slippage REAL DEFAULT 0.01,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # Add fee columns if they don't exist (for existing databases)
+    try:
+        cursor.execute('ALTER TABLE settings ADD COLUMN maker_fee REAL DEFAULT 0.02')
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute('ALTER TABLE settings ADD COLUMN taker_fee REAL DEFAULT 0.05')
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute('ALTER TABLE settings ADD COLUMN estimated_slippage REAL DEFAULT 0.01')
+    except sqlite3.OperationalError:
+        pass
 
     # Funding rate history table
     cursor.execute('''
@@ -148,7 +169,10 @@ def init_db():
             position_size REAL NOT NULL,
             price_pnl REAL DEFAULT 0,
             funding_pnl REAL DEFAULT 0,
+            fee_cost REAL DEFAULT 0,
+            slippage_cost REAL DEFAULT 0,
             total_pnl REAL DEFAULT 0,
+            net_pnl REAL DEFAULT 0,
             funding_periods_held INTEGER DEFAULT 0,
             status TEXT DEFAULT 'open',
             entry_time TIMESTAMP NOT NULL,
@@ -158,6 +182,20 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # Add fee columns to trades if they don't exist (for existing databases)
+    try:
+        cursor.execute('ALTER TABLE trades ADD COLUMN fee_cost REAL DEFAULT 0')
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute('ALTER TABLE trades ADD COLUMN slippage_cost REAL DEFAULT 0')
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute('ALTER TABLE trades ADD COLUMN net_pnl REAL DEFAULT 0')
+    except sqlite3.OperationalError:
+        pass
 
     # Funding payments received/paid during open positions
     cursor.execute('''
@@ -189,8 +227,9 @@ def init_db():
         cursor.execute('''
             INSERT INTO settings (symbol, lookback_periods, entry_std_dev,
                                   exit_std_dev, stop_loss_std_dev, position_size, paper_mode,
-                                  api_key, api_secret, api_passphrase)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  api_key, api_secret, api_passphrase,
+                                  maker_fee, taker_fee, estimated_slippage)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             DEFAULT_SETTINGS['symbol'],
             DEFAULT_SETTINGS['lookback_periods'],
@@ -202,6 +241,9 @@ def init_db():
             DEFAULT_SETTINGS['api_key'],
             DEFAULT_SETTINGS['api_secret'],
             DEFAULT_SETTINGS['api_passphrase'],
+            DEFAULT_SETTINGS['maker_fee'],
+            DEFAULT_SETTINGS['taker_fee'],
+            DEFAULT_SETTINGS['estimated_slippage'],
         ))
 
     conn.commit()
@@ -217,6 +259,8 @@ def get_settings() -> Dict:
     conn.close()
 
     if row:
+        # Get fee settings with defaults for backward compatibility
+        row_dict = dict(row)
         return {
             'id': row['id'],
             'symbol': row['symbol'],
@@ -229,6 +273,9 @@ def get_settings() -> Dict:
             'api_key': row['api_key'],
             'api_secret': row['api_secret'],
             'api_passphrase': row['api_passphrase'],
+            'maker_fee': row_dict.get('maker_fee', DEFAULT_SETTINGS['maker_fee']),
+            'taker_fee': row_dict.get('taker_fee', DEFAULT_SETTINGS['taker_fee']),
+            'estimated_slippage': row_dict.get('estimated_slippage', DEFAULT_SETTINGS['estimated_slippage']),
         }
     return DEFAULT_SETTINGS.copy()
 
@@ -250,6 +297,9 @@ def save_settings(settings: Dict) -> bool:
                 api_key = ?,
                 api_secret = ?,
                 api_passphrase = ?,
+                maker_fee = ?,
+                taker_fee = ?,
+                estimated_slippage = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = (SELECT MAX(id) FROM settings)
         ''', (
@@ -263,6 +313,9 @@ def save_settings(settings: Dict) -> bool:
             settings.get('api_key', ''),
             settings.get('api_secret', ''),
             settings.get('api_passphrase', ''),
+            settings.get('maker_fee', DEFAULT_SETTINGS['maker_fee']),
+            settings.get('taker_fee', DEFAULT_SETTINGS['taker_fee']),
+            settings.get('estimated_slippage', DEFAULT_SETTINGS['estimated_slippage']),
         ))
         conn.commit()
         return True
@@ -271,6 +324,47 @@ def save_settings(settings: Dict) -> bool:
         return False
     finally:
         conn.close()
+
+
+def calculate_trade_costs(entry_price: float, exit_price: float, size: float,
+                          settings: Dict, use_maker: bool = False) -> Dict:
+    """
+    Calculate trading costs including fees and slippage.
+
+    Args:
+        entry_price: Entry price
+        exit_price: Exit price
+        size: Position size
+        settings: Settings dict with fee rates
+        use_maker: If True, use maker fee; otherwise use taker fee
+
+    Returns:
+        Dict with fee_cost, slippage_cost, total_cost
+    """
+    fee_rate = settings.get('maker_fee', 0.02) if use_maker else settings.get('taker_fee', 0.05)
+    slippage_rate = settings.get('estimated_slippage', 0.01)
+
+    # Fee is charged on both entry and exit (percentage of notional value)
+    entry_notional = entry_price * size
+    exit_notional = exit_price * size
+
+    # Fee calculation: fee_rate is in percentage (e.g., 0.05 = 0.05%)
+    entry_fee = entry_notional * (fee_rate / 100)
+    exit_fee = exit_notional * (fee_rate / 100)
+    total_fee = entry_fee + exit_fee
+
+    # Slippage estimation (one-way on each leg)
+    entry_slippage = entry_notional * (slippage_rate / 100)
+    exit_slippage = exit_notional * (slippage_rate / 100)
+    total_slippage = entry_slippage + exit_slippage
+
+    return {
+        'fee_cost': total_fee,
+        'slippage_cost': total_slippage,
+        'total_cost': total_fee + total_slippage,
+        'fee_rate': fee_rate,
+        'slippage_rate': slippage_rate,
+    }
 
 
 # =============================================================================
@@ -724,7 +818,17 @@ def execute_close_trade(trade_id: int, price: float, funding_rate: float,
     funding_result = cursor.fetchone()
     funding_pnl = funding_result['total_funding'] if funding_result['total_funding'] else 0
 
+    # Calculate trading costs (fees + slippage)
+    settings = get_settings()
+    costs = calculate_trade_costs(entry_price, price, size, settings, use_maker=False)
+    fee_cost = costs['fee_cost']
+    slippage_cost = costs['slippage_cost']
+
+    # Total P&L before costs
     total_pnl = price_pnl + funding_pnl
+
+    # Net P&L after costs
+    net_pnl = total_pnl - fee_cost - slippage_cost
 
     # Count funding periods held
     cursor.execute('''
@@ -740,7 +844,10 @@ def execute_close_trade(trade_id: int, price: float, funding_rate: float,
             exit_z_score = ?,
             price_pnl = ?,
             funding_pnl = ?,
+            fee_cost = ?,
+            slippage_cost = ?,
             total_pnl = ?,
+            net_pnl = ?,
             funding_periods_held = ?,
             status = 'closed',
             exit_time = ?,
@@ -748,7 +855,7 @@ def execute_close_trade(trade_id: int, price: float, funding_rate: float,
         WHERE id = ?
     ''', (
         price, funding_rate, z_score,
-        price_pnl, funding_pnl, total_pnl, periods,
+        price_pnl, funding_pnl, fee_cost, slippage_cost, total_pnl, net_pnl, periods,
         datetime.now(timezone.utc).isoformat(), reason,
         trade_id
     ))
@@ -758,7 +865,9 @@ def execute_close_trade(trade_id: int, price: float, funding_rate: float,
 
     paper_prefix = '[PAPER] ' if trade['paper_trade'] else ''
     print(f"{paper_prefix}Closed {side.upper()} position at ${price:.2f}")
-    print(f"  Price P&L: ${price_pnl:.2f}, Funding P&L: ${funding_pnl:.2f}, Total: ${total_pnl:.2f}")
+    print(f"  Price P&L: ${price_pnl:.2f}, Funding P&L: ${funding_pnl:.2f}")
+    print(f"  Fees: ${fee_cost:.2f}, Slippage: ${slippage_cost:.2f}")
+    print(f"  Gross P&L: ${total_pnl:.2f}, Net P&L: ${net_pnl:.2f}")
     print(f"  Reason: {reason}, Held for {periods} funding periods")
 
 
@@ -1106,18 +1215,22 @@ def api_stats():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Get overall stats
+    # Get overall stats including fee and net P&L
     cursor.execute('''
         SELECT
             COUNT(*) as total_trades,
-            SUM(CASE WHEN total_pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
-            SUM(CASE WHEN total_pnl < 0 THEN 1 ELSE 0 END) as losing_trades,
+            SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
+            SUM(CASE WHEN net_pnl < 0 THEN 1 ELSE 0 END) as losing_trades,
             SUM(total_pnl) as total_pnl,
             SUM(price_pnl) as total_price_pnl,
             SUM(funding_pnl) as total_funding_pnl,
+            SUM(COALESCE(fee_cost, 0)) as total_fees,
+            SUM(COALESCE(slippage_cost, 0)) as total_slippage,
+            SUM(COALESCE(net_pnl, total_pnl)) as total_net_pnl,
             AVG(total_pnl) as avg_pnl,
-            MAX(total_pnl) as best_trade,
-            MIN(total_pnl) as worst_trade,
+            AVG(COALESCE(net_pnl, total_pnl)) as avg_net_pnl,
+            MAX(COALESCE(net_pnl, total_pnl)) as best_trade,
+            MIN(COALESCE(net_pnl, total_pnl)) as worst_trade,
             SUM(funding_periods_held) as total_funding_periods
         FROM trades
         WHERE symbol = ? AND status = 'closed'
@@ -1125,11 +1238,16 @@ def api_stats():
 
     stats = dict(cursor.fetchone())
 
-    # Calculate win rate
+    # Calculate win rate based on net P&L
     if stats['total_trades'] and stats['total_trades'] > 0:
         stats['win_rate'] = (stats['winning_trades'] / stats['total_trades']) * 100
     else:
         stats['win_rate'] = 0
+
+    # Add fee settings for reference
+    stats['maker_fee'] = settings.get('maker_fee', 0.02)
+    stats['taker_fee'] = settings.get('taker_fee', 0.05)
+    stats['estimated_slippage'] = settings.get('estimated_slippage', 0.01)
 
     conn.close()
 

@@ -162,12 +162,31 @@
             <div class="stat-value" id="win-rate">--</div>
         </div>
         <div class="stat-box">
-            <div class="stat-label">Total P&L</div>
+            <div class="stat-label">Total P&L (Gross)</div>
             <div class="stat-value" id="total-pnl">--</div>
         </div>
         <div class="stat-box">
             <div class="stat-label">Funding P&L</div>
             <div class="stat-value" id="funding-pnl">--</div>
+        </div>
+    </div>
+    <div class="divider"></div>
+    <div class="grid grid-4">
+        <div class="stat-box">
+            <div class="stat-label">Total Fees</div>
+            <div class="stat-value text-red" id="total-fees">--</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-label">Total Slippage</div>
+            <div class="stat-value text-red" id="total-slippage">--</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-label">Net P&L</div>
+            <div class="stat-value" id="net-pnl">--</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-label">Fee Rate</div>
+            <div class="stat-value text-muted" id="fee-rate">--</div>
         </div>
     </div>
 </div>
@@ -366,6 +385,16 @@
         const sideClass = trade.side === 'long' ? 'text-green' : 'text-red';
         const sideBadge = trade.side === 'long' ? 'badge-green' : 'badge-red';
 
+        // Calculate estimated fees based on current price
+        const currentPrice = dashboardData ? dashboardData.swap_price : trade.entry_price;
+        const feeRate = dashboardData ? (dashboardData.settings.taker_fee || 0.05) : 0.05;
+        const slippageRate = dashboardData ? (dashboardData.settings.estimated_slippage || 0.01) : 0.01;
+        const entryNotional = trade.entry_price * trade.position_size;
+        const exitNotional = currentPrice * trade.position_size;
+        const estimatedFees = (entryNotional + exitNotional) * (feeRate / 100);
+        const estimatedSlippage = (entryNotional + exitNotional) * (slippageRate / 100);
+        const totalCost = estimatedFees + estimatedSlippage;
+
         content.innerHTML = `
             <div class="grid grid-2">
                 <div class="stat-box">
@@ -384,6 +413,20 @@
                     <div class="stat-label">Entry Z-Score</div>
                     <div class="stat-value">${formatNumber(trade.entry_z_score, 2)}σ</div>
                 </div>
+            </div>
+            <div class="divider"></div>
+            <div class="grid grid-2">
+                <div class="stat-box">
+                    <div class="stat-label">Est. Fees</div>
+                    <div class="stat-value text-red">-$${formatNumber(estimatedFees, 2)}</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Est. Slippage</div>
+                    <div class="stat-value text-red">-$${formatNumber(estimatedSlippage, 2)}</div>
+                </div>
+            </div>
+            <div class="text-center text-muted mt-2" style="font-size: 0.8rem;">
+                Total est. cost: $${formatNumber(totalCost, 2)} (${formatNumber(feeRate, 3)}% fee + ${formatNumber(slippageRate, 3)}% slippage)
             </div>
             <div class="divider"></div>
             <div class="text-center text-muted">
@@ -456,6 +499,22 @@
         const fundingEl = document.getElementById('funding-pnl');
         fundingEl.textContent = '$' + formatNumber(fundingPnl, 2);
         fundingEl.className = 'stat-value ' + (fundingPnl >= 0 ? 'text-green' : 'text-red');
+
+        // Fee statistics
+        const totalFees = stats.total_fees || 0;
+        document.getElementById('total-fees').textContent = '-$' + formatNumber(totalFees, 2);
+
+        const totalSlippage = stats.total_slippage || 0;
+        document.getElementById('total-slippage').textContent = '-$' + formatNumber(totalSlippage, 2);
+
+        const netPnl = stats.total_net_pnl || (totalPnl - totalFees - totalSlippage);
+        const netPnlEl = document.getElementById('net-pnl');
+        netPnlEl.textContent = '$' + formatNumber(netPnl, 2);
+        netPnlEl.className = 'stat-value ' + (netPnl >= 0 ? 'text-green' : 'text-red');
+
+        // Fee rate from settings
+        const feeRate = stats.taker_fee || 0.05;
+        document.getElementById('fee-rate').textContent = formatPercent(feeRate, 3);
     }
 
     // Open position

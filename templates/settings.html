@@ -67,6 +67,31 @@
                 <strong>Warning:</strong> Live trading mode is enabled. Real orders will be placed on OKX.
             </div>
 
+            <div class="divider"></div>
+            <h4 class="mb-2">Fee Settings</h4>
+
+            <div class="form-group">
+                <label class="form-label">Maker Fee (%)</label>
+                <input type="number" id="maker_fee" class="form-control" min="0" max="1" step="0.001">
+                <span class="form-help">Fee for limit orders (default: 0.02%)</span>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Taker Fee (%)</label>
+                <input type="number" id="taker_fee" class="form-control" min="0" max="1" step="0.001">
+                <span class="form-help">Fee for market orders (default: 0.05%)</span>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Estimated Slippage (%)</label>
+                <input type="number" id="estimated_slippage" class="form-control" min="0" max="1" step="0.001">
+                <span class="form-help">Expected slippage per trade (default: 0.01%)</span>
+            </div>
+
+            <div class="alert alert-info">
+                <strong>OKX Fee Tiers:</strong> Check your VIP level at <a href="https://www.okx.com/fees" target="_blank">okx.com/fees</a>
+            </div>
+
             <button type="submit" class="btn btn-primary">Save Settings</button>
         </form>
     </div>
@@ -214,6 +239,11 @@
             document.getElementById('position_size').value = currentSettings.position_size;
             document.getElementById('paper_mode').checked = currentSettings.paper_mode;
 
+            // Fee settings
+            document.getElementById('maker_fee').value = currentSettings.maker_fee || 0.02;
+            document.getElementById('taker_fee').value = currentSettings.taker_fee || 0.05;
+            document.getElementById('estimated_slippage').value = currentSettings.estimated_slippage || 0.01;
+
             document.getElementById('api_key').value = currentSettings.api_key || '';
             document.getElementById('api_secret').value = currentSettings.api_secret || '';
             document.getElementById('api_passphrase').value = currentSettings.api_passphrase || '';
@@ -242,7 +272,10 @@
             exit_std_dev: parseFloat(document.getElementById('exit_std_dev').value),
             stop_loss_std_dev: parseFloat(document.getElementById('stop_loss_std_dev').value),
             position_size: parseFloat(document.getElementById('position_size').value),
-            paper_mode: document.getElementById('paper_mode').checked
+            paper_mode: document.getElementById('paper_mode').checked,
+            maker_fee: parseFloat(document.getElementById('maker_fee').value),
+            taker_fee: parseFloat(document.getElementById('taker_fee').value),
+            estimated_slippage: parseFloat(document.getElementById('estimated_slippage').value)
         };
 
         try {
