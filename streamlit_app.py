@@ -227,73 +227,77 @@ def render_dashboard():
 
     st.divider()
 
-    # Z-Score Section
-    col1, col2 = st.columns([2, 1])
+    # Z-Score Analysis - Full width main section
+    z_score = data['z_score']
+    entry_threshold = settings['entry_std_dev']
+    exit_threshold = settings['exit_std_dev']
+    stop_loss = settings['stop_loss_std_dev']
 
-    with col1:
-        st.subheader("Z-Score Analysis")
+    # Determine signal
+    signal = "none"
+    signal_text = "No Signal"
+    signal_color = "#8b949e"
+    if z_score >= entry_threshold:
+        signal = "short"
+        signal_text = "🔴 SHORT Signal (Funding High)"
+        signal_color = "#ff4444"
+    elif z_score <= -entry_threshold:
+        signal = "long"
+        signal_text = "🟢 LONG Signal (Funding Low)"
+        signal_color = "#00ff88"
+    elif abs(z_score) <= exit_threshold:
+        signal_text = "⚪ Near Mean"
+        signal_color = "#58a6ff"
 
-        z_score = data['z_score']
-        entry_threshold = settings['entry_std_dev']
-        exit_threshold = settings['exit_std_dev']
-        stop_loss = settings['stop_loss_std_dev']
+    # Z-Score gauge - full width
+    st.subheader("Z-Score Analysis")
 
-        # Determine signal
-        signal = "none"
-        signal_text = "No Signal"
-        if z_score >= entry_threshold:
-            signal = "short"
-            signal_text = "🔴 SHORT Signal (Funding High)"
-        elif z_score <= -entry_threshold:
-            signal = "long"
-            signal_text = "🟢 LONG Signal (Funding Low)"
-        elif abs(z_score) <= exit_threshold:
-            signal_text = "⚪ Near Mean"
-
-        # Display Z-score gauge
-        fig = go.Figure(go.Indicator(
-            mode="gauge+number",
-            value=z_score,
-            title={'text': "Current Z-Score"},
-            gauge={
-                'axis': {'range': [-6, 6]},
-                'bar': {'color': "#00ff88" if z_score < 0 else "#ff4444"},
-                'bgcolor': "rgba(0,0,0,0)",
-                'steps': [
-                    {'range': [-6, -entry_threshold], 'color': "rgba(0, 255, 136, 0.3)"},
-                    {'range': [-entry_threshold, -exit_threshold], 'color': "rgba(136, 136, 136, 0.1)"},
-                    {'range': [-exit_threshold, exit_threshold], 'color': "rgba(88, 166, 255, 0.2)"},
-                    {'range': [exit_threshold, entry_threshold], 'color': "rgba(136, 136, 136, 0.1)"},
-                    {'range': [entry_threshold, 6], 'color': "rgba(255, 68, 68, 0.3)"},
-                ],
-                'threshold': {
-                    'line': {'color': "white", 'width': 2},
-                    'thickness': 0.75,
-                    'value': z_score
-                }
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=z_score,
+        number={'suffix': 'σ', 'font': {'size': 48, 'color': signal_color}},
+        gauge={
+            'axis': {'range': [-6, 6], 'tickwidth': 1, 'tickcolor': "#8b949e"},
+            'bar': {'color': signal_color, 'thickness': 0.3},
+            'bgcolor': "rgba(0,0,0,0)",
+            'borderwidth': 0,
+            'steps': [
+                {'range': [-6, -entry_threshold], 'color': "rgba(0, 255, 136, 0.3)"},
+                {'range': [-entry_threshold, -exit_threshold], 'color': "rgba(136, 136, 136, 0.1)"},
+                {'range': [-exit_threshold, exit_threshold], 'color': "rgba(88, 166, 255, 0.2)"},
+                {'range': [exit_threshold, entry_threshold], 'color': "rgba(136, 136, 136, 0.1)"},
+                {'range': [entry_threshold, 6], 'color': "rgba(255, 68, 68, 0.3)"},
+            ],
+            'threshold': {
+                'line': {'color': "white", 'width': 3},
+                'thickness': 0.8,
+                'value': z_score
             }
-        ))
-        fig.update_layout(
-            height=250,
-            margin=dict(l=20, r=20, t=40, b=20),
-            paper_bgcolor='rgba(0,0,0,0)',
-            font={'color': 'white'}
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        }
+    ))
+    fig.update_layout(
+        height=200,
+        margin=dict(l=30, r=30, t=30, b=10),
+        paper_bgcolor='rgba(0,0,0,0)',
+        font={'color': 'white'}
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
-        st.info(signal_text)
-
+    # Signal and thresholds row
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1:
+        st.metric("Signal", signal_text.split(' ')[0] if signal != "none" else "NONE")
     with col2:
-        st.subheader("Signal Thresholds")
-        st.write(f"🔴 **SHORT Entry**: ≥ +{entry_threshold}σ")
-        st.write(f"🟢 **LONG Entry**: ≤ -{entry_threshold}σ")
-        st.write(f"⚪ **Exit**: ±{exit_threshold}σ")
-        st.write(f"🛑 **Stop Loss**: ±{stop_loss}σ")
+        st.metric("Mean Rate", f"{data['mean_rate']*100:.4f}%")
+    with col3:
+        st.metric("Std Dev", f"{data['std_dev']*100:.4f}%")
+    with col4:
+        st.metric("Entry ±", f"{entry_threshold}σ")
+    with col5:
+        st.metric("Stop Loss", f"±{stop_loss}σ")
 
-        st.divider()
-
-        st.write(f"**Mean Rate**: {data['mean_rate']*100:.4f}%")
-        st.write(f"**Std Dev**: {data['std_dev']*100:.4f}%")
+    if signal != "none":
+        st.success(signal_text) if signal == "long" else st.error(signal_text)
 
     st.divider()
 
