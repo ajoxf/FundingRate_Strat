@@ -759,16 +759,29 @@ def main():
 
     st.sidebar.divider()
 
-    # Quick stats in sidebar
+    # Quick stats in sidebar as a card
     settings = get_settings()
     stats = get_stats(settings['symbol'])
 
-    st.sidebar.subheader("Quick Stats")
-    st.sidebar.metric("Symbol", settings['symbol'])
-    st.sidebar.metric("Total Trades", stats.get('total_trades', 0))
+    # Format symbol for display (BTC-USDT-SWAP -> BTC/USDT)
+    symbol_display = settings['symbol'].replace('-SWAP', '').replace('-', '/')
 
-    net_pnl = stats.get('total_net_pnl', 0) or 0
-    st.sidebar.metric("Net P&L", f"${net_pnl:,.2f}")
+    st.sidebar.markdown(f"""
+    <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+                border-radius: 12px; padding: 16px; margin: 8px 0;
+                border: 1px solid #30363d;">
+        <div style="color: #8b949e; font-size: 11px; text-transform: uppercase; letter-spacing: 1px;">Symbol</div>
+        <div style="color: #ffffff; font-size: 20px; font-weight: 700; margin-bottom: 12px;">{symbol_display}</div>
+        <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+            <span style="color: #8b949e; font-size: 12px;">Total Trades</span>
+            <span style="color: #58a6ff; font-size: 14px; font-weight: 600;">{stats.get('total_trades', 0)}</span>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+            <span style="color: #8b949e; font-size: 12px;">Net P&L</span>
+            <span style="color: {'#3fb950' if (stats.get('total_net_pnl', 0) or 0) >= 0 else '#f85149'}; font-size: 14px; font-weight: 600;">${(stats.get('total_net_pnl', 0) or 0):,.2f}</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     st.sidebar.divider()
 
