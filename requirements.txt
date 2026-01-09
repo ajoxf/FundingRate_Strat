@@ -1,12 +1,10 @@
-# Flask (original UI)
-flask>=2.3.0
-
-# Streamlit (alternative UI)
+# Core dependencies
 streamlit>=1.28.0
 plotly>=5.18.0
 pandas>=2.0.0
-
-# Shared dependencies
 requests>=2.31.0
 python-dotenv>=1.0.0
+
+# Flask (needed because trading_portal.py is in repo)
+flask>=2.3.0
 APScheduler>=3.10.0
