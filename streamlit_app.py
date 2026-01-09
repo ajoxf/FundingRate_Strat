@@ -776,10 +776,10 @@ def main():
         st.rerun()
 
     # Auto-refresh toggle
-    auto_refresh = st.sidebar.toggle("Auto-refresh (30s)", value=False)
+    auto_refresh = st.sidebar.toggle("Auto-refresh (0.5s)", value=False)
 
     if auto_refresh:
-        time.sleep(30)
+        time.sleep(0.5)
         st.rerun()
 
     # Render selected page
