@@ -227,7 +227,7 @@ def render_dashboard():
 
     st.divider()
 
-    # Z-Score Analysis - Full width main section
+    # Z-Score Analysis - Center card
     z_score = data['z_score']
     entry_threshold = settings['entry_std_dev']
     exit_threshold = settings['exit_std_dev']
@@ -239,65 +239,44 @@ def render_dashboard():
     signal_color = "#8b949e"
     if z_score >= entry_threshold:
         signal = "short"
-        signal_text = "🔴 SHORT Signal (Funding High)"
+        signal_text = "SHORT Signal"
         signal_color = "#ff4444"
     elif z_score <= -entry_threshold:
         signal = "long"
-        signal_text = "🟢 LONG Signal (Funding Low)"
+        signal_text = "LONG Signal"
         signal_color = "#00ff88"
     elif abs(z_score) <= exit_threshold:
-        signal_text = "⚪ Near Mean"
+        signal_text = "Near Mean"
         signal_color = "#58a6ff"
 
-    # Z-Score gauge - full width
-    st.subheader("Z-Score Analysis")
-
-    fig = go.Figure(go.Indicator(
-        mode="gauge+number",
-        value=z_score,
-        number={'suffix': 'σ', 'font': {'size': 48, 'color': signal_color}},
-        gauge={
-            'axis': {'range': [-6, 6], 'tickwidth': 1, 'tickcolor': "#8b949e"},
-            'bar': {'color': signal_color, 'thickness': 0.3},
-            'bgcolor': "rgba(0,0,0,0)",
-            'borderwidth': 0,
-            'steps': [
-                {'range': [-6, -entry_threshold], 'color': "rgba(0, 255, 136, 0.3)"},
-                {'range': [-entry_threshold, -exit_threshold], 'color': "rgba(136, 136, 136, 0.1)"},
-                {'range': [-exit_threshold, exit_threshold], 'color': "rgba(88, 166, 255, 0.2)"},
-                {'range': [exit_threshold, entry_threshold], 'color': "rgba(136, 136, 136, 0.1)"},
-                {'range': [entry_threshold, 6], 'color': "rgba(255, 68, 68, 0.3)"},
-            ],
-            'threshold': {
-                'line': {'color': "white", 'width': 3},
-                'thickness': 0.8,
-                'value': z_score
-            }
-        }
-    ))
-    fig.update_layout(
-        height=200,
-        margin=dict(l=30, r=30, t=30, b=10),
-        paper_bgcolor='rgba(0,0,0,0)',
-        font={'color': 'white'}
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Signal and thresholds row
-    col1, col2, col3, col4, col5 = st.columns(5)
-    with col1:
-        st.metric("Signal", signal_text.split(' ')[0] if signal != "none" else "NONE")
-    with col2:
-        st.metric("Mean Rate", f"{data['mean_rate']*100:.4f}%")
-    with col3:
-        st.metric("Std Dev", f"{data['std_dev']*100:.4f}%")
-    with col4:
-        st.metric("Entry ±", f"{entry_threshold}σ")
-    with col5:
-        st.metric("Stop Loss", f"±{stop_loss}σ")
-
-    if signal != "none":
-        st.success(signal_text) if signal == "long" else st.error(signal_text)
+    # Z-Score card - centered
+    st.markdown(f"""
+    <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+                border-radius: 16px; padding: 24px; margin: 16px auto;
+                border: 1px solid #30363d; max-width: 500px; text-align: center;">
+        <div style="color: #8b949e; font-size: 12px; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 8px;">Z-Score</div>
+        <div style="color: {signal_color}; font-size: 56px; font-weight: 700; margin-bottom: 8px;">{z_score:.2f}σ</div>
+        <div style="color: {signal_color}; font-size: 18px; font-weight: 600; margin-bottom: 16px;">{signal_text}</div>
+        <div style="display: flex; justify-content: space-around; padding-top: 16px; border-top: 1px solid #30363d;">
+            <div>
+                <div style="color: #8b949e; font-size: 11px;">Mean Rate</div>
+                <div style="color: #ffffff; font-size: 14px; font-weight: 600;">{data['mean_rate']*100:.4f}%</div>
+            </div>
+            <div>
+                <div style="color: #8b949e; font-size: 11px;">Std Dev</div>
+                <div style="color: #ffffff; font-size: 14px; font-weight: 600;">{data['std_dev']*100:.4f}%</div>
+            </div>
+            <div>
+                <div style="color: #8b949e; font-size: 11px;">Entry</div>
+                <div style="color: #ffffff; font-size: 14px; font-weight: 600;">±{entry_threshold}σ</div>
+            </div>
+            <div>
+                <div style="color: #8b949e; font-size: 11px;">Stop Loss</div>
+                <div style="color: #ffffff; font-size: 14px; font-weight: 600;">±{stop_loss}σ</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     st.divider()
 
