@@ -11,8 +11,8 @@ import plotly.express as px
 from datetime import datetime, timezone
 import time
 
-# Import backend functions from trading_portal
-from trading_portal import (
+# Import backend functions from core module (Flask-independent)
+from core import (
     init_db,
     get_settings,
     save_settings,
