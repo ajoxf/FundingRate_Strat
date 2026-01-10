@@ -21,7 +21,7 @@ Funding Rate Mechanism:
 
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, List
 
 from dotenv import load_dotenv
@@ -972,10 +972,21 @@ def api_dashboard():
     current_position = open_trade['side'] if open_trade else None
     signal = get_signal(z_data['z_score'], settings, current_position)
 
-    # Calculate time until next funding
-    next_funding_ts = funding_data.get('next_funding_time', 0) if funding_data else 0
-    now_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
-    time_until_funding = max(0, next_funding_ts - now_ts)
+    # Calculate time until next funding (00:00, 08:00, 16:00 UTC)
+    now_utc = datetime.now(timezone.utc)
+    current_hour = now_utc.hour
+
+    # Find next funding hour
+    funding_hours = [0, 8, 16, 24]  # 24 = midnight next day
+    next_funding_hour = next(h for h in funding_hours if h > current_hour)
+
+    if next_funding_hour == 24:
+        next_funding_dt = now_utc.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    else:
+        next_funding_dt = now_utc.replace(hour=next_funding_hour, minute=0, second=0, microsecond=0)
+
+    next_funding_ts = int(next_funding_dt.timestamp() * 1000)
+    time_until_funding = max(0, int((next_funding_dt - now_utc).total_seconds() * 1000))
 
     # Format countdown
     seconds_until = time_until_funding // 1000
