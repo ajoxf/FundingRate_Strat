@@ -17,6 +17,7 @@ DEFAULT_SETTINGS = {
     'exit_std_dev': float(os.environ.get('EXIT_STD_DEV', 0.2)),
     'stop_loss_std_dev': float(os.environ.get('STOP_LOSS_STD_DEV', 6.0)),
     'position_size': float(os.environ.get('POSITION_SIZE', 1.0)),
+    'leverage': int(os.environ.get('LEVERAGE', 2)),
     'paper_mode': os.environ.get('PAPER_MODE', 'true').lower() == 'true',
     'api_key': os.environ.get('OKX_API_KEY', ''),
     'api_secret': os.environ.get('OKX_API_SECRET', ''),
@@ -51,6 +52,7 @@ def init_db():
             exit_std_dev REAL DEFAULT 0.2,
             stop_loss_std_dev REAL DEFAULT 6.0,
             position_size REAL DEFAULT 1.0,
+            leverage INTEGER DEFAULT 2,
             paper_mode INTEGER DEFAULT 1,
             api_key TEXT DEFAULT '',
             api_secret TEXT DEFAULT '',
@@ -63,12 +65,18 @@ def init_db():
         )
     ''')
 
-    # Add fee columns if they don't exist (for existing databases)
+    # Add columns if they don't exist (for existing databases)
     for col, default in [('maker_fee', 0.02), ('taker_fee', 0.05), ('estimated_slippage', 0.01)]:
         try:
             cursor.execute(f'ALTER TABLE settings ADD COLUMN {col} REAL DEFAULT {default}')
         except sqlite3.OperationalError:
             pass
+
+    # Add leverage column for existing databases
+    try:
+        cursor.execute('ALTER TABLE settings ADD COLUMN leverage INTEGER DEFAULT 2')
+    except sqlite3.OperationalError:
+        pass
 
     # Funding rate history table
     cursor.execute('''
@@ -138,10 +146,10 @@ def init_db():
     if cursor.fetchone()[0] == 0:
         cursor.execute('''
             INSERT INTO settings (symbol, lookback_periods, entry_std_dev,
-                                  exit_std_dev, stop_loss_std_dev, position_size, paper_mode,
-                                  api_key, api_secret, api_passphrase,
+                                  exit_std_dev, stop_loss_std_dev, position_size, leverage,
+                                  paper_mode, api_key, api_secret, api_passphrase,
                                   maker_fee, taker_fee, estimated_slippage)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             DEFAULT_SETTINGS['symbol'],
             DEFAULT_SETTINGS['lookback_periods'],
@@ -149,6 +157,7 @@ def init_db():
             DEFAULT_SETTINGS['exit_std_dev'],
             DEFAULT_SETTINGS['stop_loss_std_dev'],
             DEFAULT_SETTINGS['position_size'],
+            DEFAULT_SETTINGS['leverage'],
             1 if DEFAULT_SETTINGS['paper_mode'] else 0,
             DEFAULT_SETTINGS['api_key'],
             DEFAULT_SETTINGS['api_secret'],
@@ -180,6 +189,7 @@ def get_settings() -> Dict:
             'exit_std_dev': row['exit_std_dev'],
             'stop_loss_std_dev': row['stop_loss_std_dev'],
             'position_size': row['position_size'],
+            'leverage': row_dict.get('leverage', DEFAULT_SETTINGS['leverage']),
             'paper_mode': bool(row['paper_mode']),
             'api_key': row['api_key'],
             'api_secret': row['api_secret'],
@@ -205,6 +215,7 @@ def save_settings(settings: Dict) -> bool:
                 exit_std_dev = ?,
                 stop_loss_std_dev = ?,
                 position_size = ?,
+                leverage = ?,
                 paper_mode = ?,
                 api_key = ?,
                 api_secret = ?,
@@ -221,6 +232,7 @@ def save_settings(settings: Dict) -> bool:
             settings['exit_std_dev'],
             settings['stop_loss_std_dev'],
             settings['position_size'],
+            settings.get('leverage', DEFAULT_SETTINGS['leverage']),
             1 if settings['paper_mode'] else 0,
             settings.get('api_key', ''),
             settings.get('api_secret', ''),

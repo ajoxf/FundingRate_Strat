@@ -53,6 +53,18 @@
             </div>
 
             <div class="form-group">
+                <label class="form-label">Leverage</label>
+                <select id="leverage" class="form-control">
+                    <option value="1">1x (Conservative)</option>
+                    <option value="2">2x (Recommended)</option>
+                    <option value="3">3x (Moderate)</option>
+                    <option value="5">5x (Aggressive)</option>
+                    <option value="10">10x (High Risk)</option>
+                </select>
+                <span class="form-help">Higher leverage = higher returns but higher liquidation risk</span>
+            </div>
+
+            <div class="form-group">
                 <label class="form-label flex items-center gap-2">
                     <span>Paper Trading Mode</span>
                     <label class="toggle">
@@ -237,6 +249,7 @@
             document.getElementById('exit_std_dev').value = currentSettings.exit_std_dev;
             document.getElementById('stop_loss_std_dev').value = currentSettings.stop_loss_std_dev;
             document.getElementById('position_size').value = currentSettings.position_size;
+            document.getElementById('leverage').value = currentSettings.leverage || 2;
             document.getElementById('paper_mode').checked = currentSettings.paper_mode;
 
             // Fee settings
@@ -272,6 +285,7 @@
             exit_std_dev: parseFloat(document.getElementById('exit_std_dev').value),
             stop_loss_std_dev: parseFloat(document.getElementById('stop_loss_std_dev').value),
             position_size: parseFloat(document.getElementById('position_size').value),
+            leverage: parseInt(document.getElementById('leverage').value),
             paper_mode: document.getElementById('paper_mode').checked,
             maker_fee: parseFloat(document.getElementById('maker_fee').value),
             taker_fee: parseFloat(document.getElementById('taker_fee').value),

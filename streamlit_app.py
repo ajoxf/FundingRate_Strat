@@ -665,6 +665,19 @@ def render_settings():
         exit_std = st.number_input("Exit Std Dev", 0.0, 1.0, float(settings['exit_std_dev']), 0.1)
         stop_loss_std = st.number_input("Stop Loss Std Dev", 3.0, 10.0, float(settings['stop_loss_std_dev']), 0.5)
         position_size = st.number_input("Position Size", 0.001, 100.0, float(settings['position_size']), 0.001)
+
+        leverage_options = [1, 2, 3, 5, 10]
+        leverage_labels = ["1x (Conservative)", "2x (Recommended)", "3x (Moderate)", "5x (Aggressive)", "10x (High Risk)"]
+        current_leverage = settings.get('leverage', 2)
+        leverage_index = leverage_options.index(current_leverage) if current_leverage in leverage_options else 1
+        leverage = st.selectbox(
+            "Leverage",
+            options=leverage_options,
+            format_func=lambda x: leverage_labels[leverage_options.index(x)],
+            index=leverage_index,
+            help="Higher leverage = higher returns but higher liquidation risk"
+        )
+
         paper_mode = st.toggle("Paper Trading", settings['paper_mode'])
 
         st.divider()
@@ -683,6 +696,7 @@ def render_settings():
                 'exit_std_dev': exit_std,
                 'stop_loss_std_dev': stop_loss_std,
                 'position_size': position_size,
+                'leverage': leverage,
                 'paper_mode': paper_mode,
                 'maker_fee': maker_fee,
                 'taker_fee': taker_fee,
@@ -734,11 +748,16 @@ def main():
     stats = get_stats(settings['symbol'])
     symbol_display = settings['symbol'].replace('-SWAP', '').replace('-', '/')
 
+    leverage = settings.get('leverage', 2)
     st.sidebar.markdown(f"""
     <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
                 border-radius: 12px; padding: 16px; border: 1px solid #30363d;">
         <div style="color: #8b949e; font-size: 11px; text-transform: uppercase;">Symbol</div>
         <div style="color: #fff; font-size: 20px; font-weight: 700; margin-bottom: 12px;">{symbol_display}</div>
+        <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+            <span style="color: #8b949e; font-size: 12px;">Leverage</span>
+            <span style="color: #a371f7; font-weight: 600;">{leverage}x</span>
+        </div>
         <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
             <span style="color: #8b949e; font-size: 12px;">Total Trades</span>
             <span style="color: #58a6ff; font-weight: 600;">{stats.get('total_trades', 0)}</span>
