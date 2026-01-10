@@ -35,6 +35,102 @@ def calculate_trade_costs(entry_price: float, exit_price: float, size: float,
     }
 
 
+def calculate_liquidation_price(entry_price: float, leverage: int, side: str,
+                                 maintenance_margin: float = 0.5) -> float:
+    """
+    Calculate estimated liquidation price.
+
+    Args:
+        entry_price: Position entry price
+        leverage: Leverage multiplier (e.g., 2, 3, 5, 10)
+        side: 'long' or 'short'
+        maintenance_margin: Maintenance margin rate (default 0.5% for OKX BTC)
+
+    Returns:
+        Estimated liquidation price
+    """
+    # Liquidation occurs when losses exceed margin minus maintenance margin
+    # For cross margin: liq_price = entry * (1 ± (1/leverage) * (1 - maintenance_margin))
+    margin_ratio = 1 / leverage
+    buffer = 1 - (maintenance_margin / 100)  # ~99.5% of margin can be lost
+
+    if side == 'long':
+        # Long liquidates when price drops
+        liq_price = entry_price * (1 - margin_ratio * buffer)
+    else:
+        # Short liquidates when price rises
+        liq_price = entry_price * (1 + margin_ratio * buffer)
+
+    return liq_price
+
+
+def calculate_leveraged_metrics(entry_price: float, current_price: float, size: float,
+                                 side: str, leverage: int, settings: Dict) -> Dict:
+    """
+    Calculate leveraged position metrics including ROI on margin.
+
+    Returns:
+        Dict with margin, notional, pnl, roi_on_margin, liquidation_price, etc.
+    """
+    notional = entry_price * size
+    margin = notional / leverage
+
+    # Calculate P&L
+    if side == 'long':
+        price_pnl = (current_price - entry_price) * size
+    else:
+        price_pnl = (entry_price - current_price) * size
+
+    # Calculate costs
+    costs = calculate_trade_costs(entry_price, current_price, size, settings)
+
+    # Net P&L
+    net_pnl = price_pnl - costs['total_cost']
+
+    # ROI on margin (leveraged return)
+    roi_on_margin = (net_pnl / margin) * 100 if margin > 0 else 0
+
+    # ROI on notional (unleveraged return)
+    roi_on_notional = (net_pnl / notional) * 100 if notional > 0 else 0
+
+    # Liquidation price
+    liq_price = calculate_liquidation_price(entry_price, leverage, side)
+
+    # Distance to liquidation
+    if side == 'long':
+        liq_distance_pct = ((entry_price - liq_price) / entry_price) * 100
+        price_to_liq_pct = ((current_price - liq_price) / current_price) * 100
+    else:
+        liq_distance_pct = ((liq_price - entry_price) / entry_price) * 100
+        price_to_liq_pct = ((liq_price - current_price) / current_price) * 100
+
+    # Warning level based on distance to liquidation
+    if price_to_liq_pct < 5:
+        liq_warning = 'CRITICAL'
+    elif price_to_liq_pct < 10:
+        liq_warning = 'HIGH'
+    elif price_to_liq_pct < 20:
+        liq_warning = 'MEDIUM'
+    else:
+        liq_warning = 'LOW'
+
+    return {
+        'notional': notional,
+        'margin': margin,
+        'leverage': leverage,
+        'price_pnl': price_pnl,
+        'net_pnl': net_pnl,
+        'roi_on_margin': roi_on_margin,
+        'roi_on_notional': roi_on_notional,
+        'liquidation_price': liq_price,
+        'liq_distance_pct': liq_distance_pct,
+        'price_to_liq_pct': price_to_liq_pct,
+        'liq_warning': liq_warning,
+        'fee_cost': costs['fee_cost'],
+        'slippage_cost': costs['slippage_cost'],
+    }
+
+
 def calculate_z_score(symbol: str, lookback_periods: int) -> Optional[Dict]:
     """Calculate current Z-score for funding rate."""
     conn = get_db_connection()

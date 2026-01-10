@@ -19,6 +19,8 @@ from .trading import (
     record_funding_payment,
     bootstrap_funding_history,
     calculate_trade_costs,
+    calculate_liquidation_price,
+    calculate_leveraged_metrics,
 )
 
 from .okx_client import (
@@ -41,6 +43,8 @@ __all__ = [
     'record_funding_payment',
     'bootstrap_funding_history',
     'calculate_trade_costs',
+    'calculate_liquidation_price',
+    'calculate_leveraged_metrics',
     'OKXClient',
     'OKXClientError',
     'get_okx_client',

@@ -26,6 +26,8 @@ from core import (
     execute_close_trade,
     bootstrap_funding_history,
     calculate_trade_costs,
+    calculate_liquidation_price,
+    calculate_leveraged_metrics,
     DEFAULT_SETTINGS,
 )
 
@@ -411,12 +413,27 @@ def render_dashboard():
 
         if open_trade:
             side_color = 'green' if open_trade['side'] == 'long' else 'red'
-            costs = calculate_trade_costs(
+            leverage = settings.get('leverage', 2)
+
+            # Calculate leveraged metrics
+            metrics = calculate_leveraged_metrics(
                 open_trade['entry_price'],
                 data['current_price'],
                 open_trade['position_size'],
+                open_trade['side'],
+                leverage,
                 settings
             )
+
+            # Liquidation warning colors
+            liq_colors = {
+                'CRITICAL': '#f85149',
+                'HIGH': '#d29922',
+                'MEDIUM': '#58a6ff',
+                'LOW': '#3fb950'
+            }
+            liq_color = liq_colors.get(metrics['liq_warning'], '#8b949e')
+            roi_color = 'green' if metrics['roi_on_margin'] >= 0 else 'red'
 
             st.markdown(f"""
             <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; text-align: center;">
@@ -425,21 +442,49 @@ def render_dashboard():
                     <div class="stat-value {side_color}">{open_trade['side'].upper()}</div>
                 </div>
                 <div class="stat-box">
-                    <div class="stat-label">Size</div>
-                    <div class="stat-value">{open_trade['position_size']}</div>
+                    <div class="stat-label">Leverage</div>
+                    <div class="stat-value purple">{leverage}x</div>
                 </div>
                 <div class="stat-box">
                     <div class="stat-label">Entry Price</div>
                     <div class="stat-value">${open_trade['entry_price']:,.2f}</div>
                 </div>
                 <div class="stat-box">
-                    <div class="stat-label">Entry Z-Score</div>
-                    <div class="stat-value">{open_trade['entry_z_score']:.2f}σ</div>
+                    <div class="stat-label">Current Price</div>
+                    <div class="stat-value">${data['current_price']:,.2f}</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Margin</div>
+                    <div class="stat-value">${metrics['margin']:,.2f}</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">ROI (Margin)</div>
+                    <div class="stat-value {roi_color}">{metrics['roi_on_margin']:+.2f}%</div>
                 </div>
             </div>
             <div class="divider"></div>
+            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; text-align: center;">
+                <div class="stat-box">
+                    <div class="stat-label">Liquidation Price</div>
+                    <div class="stat-value" style="color: {liq_color};">${metrics['liquidation_price']:,.2f}</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Distance to Liq</div>
+                    <div class="stat-value" style="color: {liq_color};">{metrics['price_to_liq_pct']:.1f}%</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Show warning if close to liquidation
+            if metrics['liq_warning'] == 'CRITICAL':
+                st.markdown('<div style="background: rgba(248, 81, 73, 0.2); border: 1px solid #f85149; border-radius: 6px; padding: 12px; margin: 12px 0; text-align: center; color: #f85149; font-weight: 600;">⚠️ CRITICAL: Close to liquidation!</div>', unsafe_allow_html=True)
+            elif metrics['liq_warning'] == 'HIGH':
+                st.markdown('<div style="background: rgba(210, 153, 34, 0.2); border: 1px solid #d29922; border-radius: 6px; padding: 12px; margin: 12px 0; text-align: center; color: #d29922;">⚠️ Warning: Getting close to liquidation</div>', unsafe_allow_html=True)
+
+            st.markdown(f"""
+            <div class="divider"></div>
             <div style="text-align: center;" class="text-muted">
-                Opened: {open_trade['entry_time']}
+                Opened: {open_trade['entry_time'][:19]}
             </div>
             """, unsafe_allow_html=True)
 

@@ -366,6 +366,17 @@
         updatePosition(data.open_trade);
     }
 
+    // Calculate liquidation price
+    function calculateLiquidationPrice(entryPrice, leverage, side) {
+        const marginRatio = 1 / leverage;
+        const buffer = 1 - (0.5 / 100);  // 0.5% maintenance margin
+        if (side === 'long') {
+            return entryPrice * (1 - marginRatio * buffer);
+        } else {
+            return entryPrice * (1 + marginRatio * buffer);
+        }
+    }
+
     // Update position display
     function updatePosition(trade) {
         const content = document.getElementById('position-content');
@@ -386,17 +397,60 @@
         }
 
         const sideClass = trade.side === 'long' ? 'text-green' : 'text-red';
-        const sideBadge = trade.side === 'long' ? 'badge-green' : 'badge-red';
 
-        // Calculate estimated fees based on current price
+        // Get current data
         const currentPrice = dashboardData ? dashboardData.swap_price : trade.entry_price;
         const feeRate = dashboardData ? (dashboardData.settings.taker_fee || 0.05) : 0.05;
         const slippageRate = dashboardData ? (dashboardData.settings.estimated_slippage || 0.01) : 0.01;
+        const leverage = dashboardData ? (dashboardData.settings.leverage || 2) : 2;
+
+        // Calculate notional and margin
         const entryNotional = trade.entry_price * trade.position_size;
         const exitNotional = currentPrice * trade.position_size;
+        const margin = entryNotional / leverage;
+
+        // Calculate P&L
+        let pricePnl;
+        if (trade.side === 'long') {
+            pricePnl = (currentPrice - trade.entry_price) * trade.position_size;
+        } else {
+            pricePnl = (trade.entry_price - currentPrice) * trade.position_size;
+        }
+
+        // Calculate costs
         const estimatedFees = (entryNotional + exitNotional) * (feeRate / 100);
         const estimatedSlippage = (entryNotional + exitNotional) * (slippageRate / 100);
         const totalCost = estimatedFees + estimatedSlippage;
+        const netPnl = pricePnl - totalCost;
+
+        // Calculate ROI on margin
+        const roiOnMargin = (netPnl / margin) * 100;
+        const roiClass = roiOnMargin >= 0 ? 'text-green' : 'text-red';
+
+        // Calculate liquidation price
+        const liqPrice = calculateLiquidationPrice(trade.entry_price, leverage, trade.side);
+
+        // Distance to liquidation
+        let priceToLiqPct;
+        if (trade.side === 'long') {
+            priceToLiqPct = ((currentPrice - liqPrice) / currentPrice) * 100;
+        } else {
+            priceToLiqPct = ((liqPrice - currentPrice) / currentPrice) * 100;
+        }
+
+        // Liquidation warning level
+        let liqClass, liqWarning = '';
+        if (priceToLiqPct < 5) {
+            liqClass = 'text-red';
+            liqWarning = '<div class="alert alert-error mt-2" style="padding: 8px; text-align: center;">⚠️ CRITICAL: Close to liquidation!</div>';
+        } else if (priceToLiqPct < 10) {
+            liqClass = 'text-yellow';
+            liqWarning = '<div class="alert alert-warning mt-2" style="padding: 8px; text-align: center;">⚠️ Warning: Getting close to liquidation</div>';
+        } else if (priceToLiqPct < 20) {
+            liqClass = 'text-blue';
+        } else {
+            liqClass = 'text-green';
+        }
 
         content.innerHTML = `
             <div class="grid grid-2">
@@ -405,32 +459,38 @@
                     <div class="stat-value ${sideClass}">${trade.side.toUpperCase()}</div>
                 </div>
                 <div class="stat-box">
-                    <div class="stat-label">Size</div>
-                    <div class="stat-value">${trade.position_size}</div>
+                    <div class="stat-label">Leverage</div>
+                    <div class="stat-value text-purple">${leverage}x</div>
                 </div>
                 <div class="stat-box">
                     <div class="stat-label">Entry Price</div>
                     <div class="stat-value">$${formatNumber(trade.entry_price, 2)}</div>
                 </div>
                 <div class="stat-box">
-                    <div class="stat-label">Entry Z-Score</div>
-                    <div class="stat-value">${formatNumber(trade.entry_z_score, 2)}σ</div>
+                    <div class="stat-label">Current Price</div>
+                    <div class="stat-value">$${formatNumber(currentPrice, 2)}</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Margin</div>
+                    <div class="stat-value">$${formatNumber(margin, 2)}</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">ROI (Margin)</div>
+                    <div class="stat-value ${roiClass}">${roiOnMargin >= 0 ? '+' : ''}${formatNumber(roiOnMargin, 2)}%</div>
                 </div>
             </div>
             <div class="divider"></div>
             <div class="grid grid-2">
                 <div class="stat-box">
-                    <div class="stat-label">Est. Fees</div>
-                    <div class="stat-value text-red">-$${formatNumber(estimatedFees, 2)}</div>
+                    <div class="stat-label">Liquidation Price</div>
+                    <div class="stat-value ${liqClass}">$${formatNumber(liqPrice, 2)}</div>
                 </div>
                 <div class="stat-box">
-                    <div class="stat-label">Est. Slippage</div>
-                    <div class="stat-value text-red">-$${formatNumber(estimatedSlippage, 2)}</div>
+                    <div class="stat-label">Distance to Liq</div>
+                    <div class="stat-value ${liqClass}">${formatNumber(priceToLiqPct, 1)}%</div>
                 </div>
             </div>
-            <div class="text-center text-muted mt-2" style="font-size: 0.8rem;">
-                Total est. cost: $${formatNumber(totalCost, 2)} (${formatNumber(feeRate, 3)}% fee + ${formatNumber(slippageRate, 3)}% slippage)
-            </div>
+            ${liqWarning}
             <div class="divider"></div>
             <div class="text-center text-muted">
                 Opened: ${new Date(trade.entry_time).toLocaleString()}
