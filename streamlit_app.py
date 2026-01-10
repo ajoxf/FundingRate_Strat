@@ -28,6 +28,8 @@ from core import (
     calculate_trade_costs,
     calculate_liquidation_price,
     calculate_leveraged_metrics,
+    estimate_delta_neutral_returns,
+    get_recommended_position_size,
     DEFAULT_SETTINGS,
 )
 
@@ -781,11 +783,194 @@ def render_settings():
         """)
 
 
+def render_delta_neutral():
+    """Render the Delta-Neutral Calculator page."""
+    st.title("🔄 Delta-Neutral Calculator")
+
+    st.markdown("""
+    <div class="card" style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 20px; border-radius: 12px; margin-bottom: 20px;">
+        <h3 style="color: #3fb950; margin-top: 0;">What is Delta-Neutral?</h3>
+        <p style="color: #e6edf3;">
+            <strong>Long Spot + Short Perpetual = Zero Price Risk</strong><br>
+            You profit purely from funding rate payments, regardless of whether BTC goes up or down.
+        </p>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 16px;">
+            <div style="text-align: center; padding: 12px; background: rgba(63, 185, 80, 0.1); border-radius: 8px;">
+                <div style="color: #3fb950; font-size: 24px; font-weight: 700;">10-20%</div>
+                <div style="color: #8b949e; font-size: 12px;">Expected APY</div>
+            </div>
+            <div style="text-align: center; padding: 12px; background: rgba(88, 166, 255, 0.1); border-radius: 8px;">
+                <div style="color: #58a6ff; font-size: 24px; font-weight: 700;">~0%</div>
+                <div style="color: #8b949e; font-size: 12px;">Price Risk</div>
+            </div>
+            <div style="text-align: center; padding: 12px; background: rgba(163, 113, 247, 0.1); border-radius: 8px;">
+                <div style="color: #a371f7; font-size: 24px; font-weight: 700;">None</div>
+                <div style="color: #8b949e; font-size: 12px;">Liquidation Risk</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Get current funding rate
+    settings = get_settings()
+    client = get_okx_client()
+    current_funding = 0.0003  # Default
+    current_price = 100000  # Default
+
+    if client:
+        try:
+            funding_data = client.get_funding_rate(settings['symbol'])
+            if funding_data:
+                current_funding = float(funding_data.get('fundingRate', 0.0003))
+            ticker = client.get_ticker(settings['symbol'])
+            if ticker:
+                current_price = float(ticker.get('last', 100000))
+        except:
+            pass
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("📊 Position Calculator")
+
+        capital = st.number_input(
+            "Total Capital ($)",
+            min_value=100.0,
+            max_value=10000000.0,
+            value=10000.0,
+            step=1000.0,
+            help="Total capital you want to deploy"
+        )
+
+        perp_leverage = st.select_slider(
+            "Perpetual Leverage",
+            options=[1, 2, 3, 5, 10],
+            value=3,
+            help="Higher leverage = more capital efficient but riskier"
+        )
+
+        avg_funding = st.number_input(
+            "Expected Avg Funding Rate (%)",
+            min_value=0.001,
+            max_value=0.1,
+            value=current_funding * 100,
+            step=0.001,
+            format="%.4f",
+            help=f"Current rate: {current_funding*100:.4f}%"
+        ) / 100  # Convert back to decimal
+
+        # Calculate position sizing
+        position = get_recommended_position_size(capital, current_price, perp_leverage)
+
+        st.markdown("---")
+        st.markdown("### 💰 Capital Allocation")
+
+        alloc_col1, alloc_col2 = st.columns(2)
+        with alloc_col1:
+            st.metric("Spot Purchase", f"${position['spot_capital']:,.2f}")
+            st.metric("BTC Amount", f"{position['position_size_btc']:.6f}")
+        with alloc_col2:
+            st.metric("Perp Margin", f"${position['perp_capital']:,.2f}")
+            st.metric("Capital Efficiency", f"{position['capital_efficiency']:.0f}%")
+
+    with col2:
+        st.subheader("📈 Return Projections")
+
+        # Calculate returns for different timeframes
+        returns_30d = estimate_delta_neutral_returns(capital, avg_funding, perp_leverage, 30)
+        returns_90d = estimate_delta_neutral_returns(capital, avg_funding, perp_leverage, 90)
+        returns_365d = estimate_delta_neutral_returns(capital, avg_funding, perp_leverage, 365)
+
+        st.markdown(f"""
+        <div class="card" style="background: #161b22; padding: 20px; border-radius: 12px; border: 1px solid #30363d;">
+            <div style="text-align: center; margin-bottom: 16px;">
+                <div style="color: #8b949e; font-size: 12px; text-transform: uppercase;">Projected Annual Return</div>
+                <div style="color: #3fb950; font-size: 48px; font-weight: 700;">{returns_365d['apy']:.1f}%</div>
+                <div style="color: #8b949e;">≈ ${returns_365d['net_return']:,.2f} on ${capital:,.0f}</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("### 📅 Projected Returns")
+
+        proj_col1, proj_col2, proj_col3 = st.columns(3)
+        with proj_col1:
+            st.metric("30 Days", f"${returns_30d['net_return']:,.2f}", f"{returns_30d['net_return_pct']:.2f}%")
+        with proj_col2:
+            st.metric("90 Days", f"${returns_90d['net_return']:,.2f}", f"{returns_90d['net_return_pct']:.2f}%")
+        with proj_col3:
+            st.metric("1 Year", f"${returns_365d['net_return']:,.2f}", f"{returns_365d['net_return_pct']:.2f}%")
+
+        st.markdown("### 💵 Funding Breakdown")
+        st.markdown(f"""
+        - **Per 8 hours:** ${returns_365d['funding_per_8h']:.2f}
+        - **Per day:** ${returns_365d['funding_per_day']:.2f}
+        - **Per month:** ${returns_365d['funding_per_day'] * 30:.2f}
+        """)
+
+    # How it works section
+    st.markdown("---")
+    st.subheader("🎯 How to Execute")
+
+    st.markdown("""
+    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px;">
+        <div class="card" style="background: #161b22; padding: 20px; border-radius: 12px; border: 1px solid #30363d;">
+            <h4 style="color: #58a6ff;">Step 1: Buy Spot</h4>
+            <p style="color: #e6edf3;">
+                Buy BTC on spot market (OKX, Binance, etc.)<br>
+                <strong>Amount:</strong> {:.6f} BTC<br>
+                <strong>Cost:</strong> ${:,.2f}
+            </p>
+        </div>
+        <div class="card" style="background: #161b22; padding: 20px; border-radius: 12px; border: 1px solid #30363d;">
+            <h4 style="color: #f85149;">Step 2: Short Perp</h4>
+            <p style="color: #e6edf3;">
+                Open short position on BTC-USDT-SWAP<br>
+                <strong>Size:</strong> {:.6f} BTC<br>
+                <strong>Margin:</strong> ${:,.2f} ({}x leverage)
+            </p>
+        </div>
+    </div>
+    """.format(
+        position['position_size_btc'],
+        position['spot_capital'],
+        position['position_size_btc'],
+        position['perp_capital'],
+        perp_leverage
+    ), unsafe_allow_html=True)
+
+    # Risk warning
+    st.markdown("---")
+    st.warning("""
+    **Risks to Consider:**
+    - **Basis Risk:** Spot and perp prices can diverge temporarily
+    - **Funding Reversal:** Funding can turn negative in bear markets
+    - **Exchange Risk:** Counterparty risk with the exchange
+    - **Execution Risk:** Slippage when entering/exiting large positions
+
+    **This is NOT risk-free, but it's much lower risk than directional trading.**
+    """)
+
+    # Comparison table
+    st.markdown("---")
+    st.subheader("📊 Strategy Comparison")
+
+    comparison_data = {
+        'Strategy': ['Delta-Neutral', 'Z-Score Timing', 'Passive Short', 'Buy & Hold'],
+        'Expected Return': ['10-20%', '6-10%', '3-8%', '???'],
+        'Price Risk': ['~0%', 'Medium', 'High', 'High'],
+        'Complexity': ['Medium', 'High', 'Low', 'Low'],
+        'Capital Efficiency': ['75%', '100%', '100%', '100%'],
+        'Liquidation Risk': ['None', 'Medium', 'High', 'None'],
+    }
+    st.table(comparison_data)
+
+
 def main():
     """Main app."""
     st.sidebar.title("Navigation")
 
-    page = st.sidebar.radio("Go to", ["📈 Dashboard", "📊 Trades", "⚙️ Settings"], label_visibility="collapsed")
+    page = st.sidebar.radio("Go to", ["📈 Dashboard", "🔄 Delta-Neutral", "📊 Trades", "⚙️ Settings"], label_visibility="collapsed")
 
     st.sidebar.divider()
 
@@ -826,6 +1011,8 @@ def main():
 
     if page == "📈 Dashboard":
         render_dashboard()
+    elif page == "🔄 Delta-Neutral":
+        render_delta_neutral()
     elif page == "📊 Trades":
         render_trades()
     elif page == "⚙️ Settings":

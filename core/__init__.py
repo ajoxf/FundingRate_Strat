@@ -30,6 +30,13 @@ from .okx_client import (
     create_okx_client,
 )
 
+from .delta_neutral import (
+    calculate_delta_neutral_metrics,
+    calculate_delta_neutral_pnl,
+    estimate_delta_neutral_returns,
+    get_recommended_position_size,
+)
+
 __all__ = [
     'init_db',
     'get_db_connection',
@@ -49,4 +56,8 @@ __all__ = [
     'OKXClientError',
     'get_okx_client',
     'create_okx_client',
+    'calculate_delta_neutral_metrics',
+    'calculate_delta_neutral_pnl',
+    'estimate_delta_neutral_returns',
+    'get_recommended_position_size',
 ]
