@@ -484,6 +484,7 @@
             <a href="/" class="navbar-brand">Funding Rate Trading</a>
             <ul class="navbar-nav">
                 <li><a href="/" class="{% if request.endpoint == 'index' %}active{% endif %}">Dashboard</a></li>
+                <li><a href="/delta-neutral" class="{% if request.endpoint == 'delta_neutral_page' %}active{% endif %}">Delta-Neutral</a></li>
                 <li><a href="/trades" class="{% if request.endpoint == 'trades_page' %}active{% endif %}">Trades</a></li>
                 <li><a href="/settings" class="{% if request.endpoint == 'settings_page' %}active{% endif %}">Settings</a></li>
             </ul>

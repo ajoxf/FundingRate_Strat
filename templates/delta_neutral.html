@@ -1,0 +1,321 @@
+{% extends "base.html" %}
+
+{% block title %}Delta-Neutral Calculator{% endblock %}
+
+{% block content %}
+<div class="card" style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); margin-bottom: 24px;">
+    <h2 style="color: #3fb950; margin-top: 0; margin-bottom: 16px;">What is Delta-Neutral?</h2>
+    <p style="color: #e6edf3; margin-bottom: 16px;">
+        <strong>Long Spot + Short Perpetual = Zero Price Risk</strong><br>
+        You profit purely from funding rate payments, regardless of whether BTC goes up or down.
+    </p>
+    <div class="grid grid-3">
+        <div style="text-align: center; padding: 16px; background: rgba(63, 185, 80, 0.1); border-radius: 8px;">
+            <div style="color: #3fb950; font-size: 28px; font-weight: 700;">10-20%</div>
+            <div style="color: #8b949e; font-size: 12px;">Expected APY</div>
+        </div>
+        <div style="text-align: center; padding: 16px; background: rgba(88, 166, 255, 0.1); border-radius: 8px;">
+            <div style="color: #58a6ff; font-size: 28px; font-weight: 700;">~0%</div>
+            <div style="color: #8b949e; font-size: 12px;">Price Risk</div>
+        </div>
+        <div style="text-align: center; padding: 16px; background: rgba(163, 113, 247, 0.1); border-radius: 8px;">
+            <div style="color: #a371f7; font-size: 28px; font-weight: 700;">None</div>
+            <div style="color: #8b949e; font-size: 12px;">Liquidation Risk</div>
+        </div>
+    </div>
+</div>
+
+<div class="grid grid-2">
+    <!-- Calculator -->
+    <div>
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Position Calculator</span>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Total Capital ($)</label>
+                <input type="number" id="capital" class="form-control" value="10000" min="100" step="1000">
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Perpetual Leverage</label>
+                <select id="leverage" class="form-control">
+                    <option value="1">1x (Conservative)</option>
+                    <option value="2">2x</option>
+                    <option value="3" selected>3x (Recommended)</option>
+                    <option value="5">5x</option>
+                    <option value="10">10x (Aggressive)</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Expected Avg Funding Rate (%)</label>
+                <input type="number" id="funding-rate" class="form-control" value="0.03" min="0.001" max="0.1" step="0.001">
+                <span class="form-help">Current rate: <span id="current-funding">--</span></span>
+            </div>
+
+            <button class="btn btn-primary w-full mt-4" onclick="calculateReturns()">Calculate Returns</button>
+
+            <div class="divider"></div>
+
+            <h4 style="color: #e6edf3; margin-bottom: 16px;">Capital Allocation</h4>
+            <div class="grid grid-2">
+                <div class="stat-box">
+                    <div class="stat-label">Spot Purchase</div>
+                    <div class="stat-value text-blue" id="spot-capital">--</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Perp Margin</div>
+                    <div class="stat-value text-purple" id="perp-margin">--</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">BTC Amount</div>
+                    <div class="stat-value" id="btc-amount">--</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Capital Efficiency</div>
+                    <div class="stat-value" id="efficiency">--</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Projections -->
+    <div>
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Return Projections</span>
+            </div>
+
+            <div class="signal-box" style="background: linear-gradient(135deg, #0d1117 0%, #161b22 100%);">
+                <div style="color: #8b949e; font-size: 12px; text-transform: uppercase; margin-bottom: 8px;">Projected Annual Return</div>
+                <div style="color: #3fb950; font-size: 56px; font-weight: 700;" id="apy">--</div>
+                <div style="color: #8b949e; margin-top: 8px;" id="annual-dollars">--</div>
+            </div>
+
+            <div class="divider"></div>
+
+            <h4 style="color: #e6edf3; margin-bottom: 16px;">Projected Returns</h4>
+            <div class="grid grid-3">
+                <div class="stat-box">
+                    <div class="stat-label">30 Days</div>
+                    <div class="stat-value text-green" id="return-30d">--</div>
+                    <div class="stat-subtext" id="return-30d-pct">--</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">90 Days</div>
+                    <div class="stat-value text-green" id="return-90d">--</div>
+                    <div class="stat-subtext" id="return-90d-pct">--</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">1 Year</div>
+                    <div class="stat-value text-green" id="return-365d">--</div>
+                    <div class="stat-subtext" id="return-365d-pct">--</div>
+                </div>
+            </div>
+
+            <div class="divider"></div>
+
+            <h4 style="color: #e6edf3; margin-bottom: 16px;">Funding Breakdown</h4>
+            <table class="table">
+                <tr>
+                    <td>Per 8 hours</td>
+                    <td class="text-right text-green" id="funding-8h">--</td>
+                </tr>
+                <tr>
+                    <td>Per day</td>
+                    <td class="text-right text-green" id="funding-day">--</td>
+                </tr>
+                <tr>
+                    <td>Per month</td>
+                    <td class="text-right text-green" id="funding-month">--</td>
+                </tr>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- How to Execute -->
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">How to Execute</span>
+    </div>
+
+    <div class="grid grid-2">
+        <div style="background: rgba(88, 166, 255, 0.1); border-radius: 8px; padding: 20px; border: 1px solid #30363d;">
+            <h4 style="color: #58a6ff; margin-top: 0;">Step 1: Buy Spot</h4>
+            <p style="color: #e6edf3; margin-bottom: 0;">
+                Buy BTC on spot market (OKX, Binance, etc.)<br>
+                <strong>Amount:</strong> <span id="step1-btc">--</span> BTC<br>
+                <strong>Cost:</strong> $<span id="step1-cost">--</span>
+            </p>
+        </div>
+        <div style="background: rgba(248, 81, 73, 0.1); border-radius: 8px; padding: 20px; border: 1px solid #30363d;">
+            <h4 style="color: #f85149; margin-top: 0;">Step 2: Short Perp</h4>
+            <p style="color: #e6edf3; margin-bottom: 0;">
+                Open SHORT position on BTC-USDT-SWAP<br>
+                <strong>Size:</strong> <span id="step2-btc">--</span> BTC<br>
+                <strong>Margin:</strong> $<span id="step2-margin">--</span> (<span id="step2-leverage">--</span>x leverage)
+            </p>
+        </div>
+    </div>
+</div>
+
+<!-- Risk Warning -->
+<div class="card" style="background: rgba(210, 153, 34, 0.1); border: 1px solid #d29922;">
+    <h4 style="color: #d29922; margin-top: 0;">Risks to Consider</h4>
+    <ul style="color: #e6edf3; margin-bottom: 0; padding-left: 20px;">
+        <li><strong>Basis Risk:</strong> Spot and perp prices can diverge temporarily</li>
+        <li><strong>Funding Reversal:</strong> Funding can turn negative in bear markets</li>
+        <li><strong>Exchange Risk:</strong> Counterparty risk with the exchange</li>
+        <li><strong>Execution Risk:</strong> Slippage when entering/exiting large positions</li>
+    </ul>
+    <p style="color: #d29922; margin-top: 16px; margin-bottom: 0;">
+        <strong>This is NOT risk-free, but it's much lower risk than directional trading.</strong>
+    </p>
+</div>
+
+<!-- Strategy Comparison -->
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">Strategy Comparison</span>
+    </div>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Strategy</th>
+                <th class="text-center">Expected Return</th>
+                <th class="text-center">Price Risk</th>
+                <th class="text-center">Complexity</th>
+                <th class="text-center">Liquidation Risk</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr style="background: rgba(63, 185, 80, 0.1);">
+                <td><strong>Delta-Neutral</strong></td>
+                <td class="text-center text-green">10-20%</td>
+                <td class="text-center text-green">~0%</td>
+                <td class="text-center">Medium</td>
+                <td class="text-center text-green">None</td>
+            </tr>
+            <tr>
+                <td>Z-Score Timing</td>
+                <td class="text-center">6-10%</td>
+                <td class="text-center text-yellow">Medium</td>
+                <td class="text-center">High</td>
+                <td class="text-center text-yellow">Medium</td>
+            </tr>
+            <tr>
+                <td>Passive Short</td>
+                <td class="text-center">3-8%</td>
+                <td class="text-center text-red">High</td>
+                <td class="text-center">Low</td>
+                <td class="text-center text-red">High</td>
+            </tr>
+            <tr>
+                <td>Buy & Hold</td>
+                <td class="text-center">???</td>
+                <td class="text-center text-red">High</td>
+                <td class="text-center">Low</td>
+                <td class="text-center text-green">None</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let currentPrice = 100000;
+    let currentFundingRate = 0.0003;
+
+    // Fetch current market data
+    async function fetchMarketData() {
+        try {
+            const response = await fetch('/api/dashboard');
+            const data = await response.json();
+            currentPrice = data.swap_price || 100000;
+            currentFundingRate = data.funding_rate || 0.0003;
+            document.getElementById('current-funding').textContent = (currentFundingRate * 100).toFixed(4) + '%';
+            document.getElementById('funding-rate').value = (currentFundingRate * 100).toFixed(4);
+            calculateReturns();
+        } catch (error) {
+            console.error('Error fetching market data:', error);
+        }
+    }
+
+    function calculateReturns() {
+        const capital = parseFloat(document.getElementById('capital').value) || 10000;
+        const leverage = parseInt(document.getElementById('leverage').value) || 3;
+        const fundingRatePct = parseFloat(document.getElementById('funding-rate').value) || 0.03;
+        const fundingRate = fundingRatePct / 100;
+
+        // Capital allocation
+        // spot_notional = capital / (1 + 1/leverage)
+        const spotAllocationRatio = 1 / (1 + 1/leverage);
+        const spotCapital = capital * spotAllocationRatio;
+        const perpMargin = capital - spotCapital;
+        const positionSize = spotCapital / currentPrice;
+        const perpNotional = positionSize * currentPrice;
+        const capitalEfficiency = (perpNotional / capital) * 100;
+
+        // Display capital allocation
+        document.getElementById('spot-capital').textContent = '$' + spotCapital.toLocaleString(undefined, {maximumFractionDigits: 2});
+        document.getElementById('perp-margin').textContent = '$' + perpMargin.toLocaleString(undefined, {maximumFractionDigits: 2});
+        document.getElementById('btc-amount').textContent = positionSize.toFixed(6) + ' BTC';
+        document.getElementById('efficiency').textContent = capitalEfficiency.toFixed(0) + '%';
+
+        // Funding calculations
+        const funding8h = fundingRate * spotCapital;
+        const fundingDay = funding8h * 3;
+        const fundingMonth = fundingDay * 30;
+        const fundingYear = fundingDay * 365;
+
+        // Trading costs (entry + exit)
+        const tradingCosts = spotCapital * 0.001 * 2;
+
+        // Returns
+        const returns30d = (fundingDay * 30) - (tradingCosts * 30/365);
+        const returns90d = (fundingDay * 90) - (tradingCosts * 90/365);
+        const returns365d = fundingYear - tradingCosts;
+
+        const apy = (returns365d / capital) * 100;
+
+        // Display projections
+        document.getElementById('apy').textContent = apy.toFixed(1) + '%';
+        document.getElementById('annual-dollars').textContent = '≈ $' + returns365d.toLocaleString(undefined, {maximumFractionDigits: 2}) + ' on $' + capital.toLocaleString();
+
+        document.getElementById('return-30d').textContent = '$' + returns30d.toLocaleString(undefined, {maximumFractionDigits: 2});
+        document.getElementById('return-30d-pct').textContent = ((returns30d / capital) * 100).toFixed(2) + '%';
+
+        document.getElementById('return-90d').textContent = '$' + returns90d.toLocaleString(undefined, {maximumFractionDigits: 2});
+        document.getElementById('return-90d-pct').textContent = ((returns90d / capital) * 100).toFixed(2) + '%';
+
+        document.getElementById('return-365d').textContent = '$' + returns365d.toLocaleString(undefined, {maximumFractionDigits: 2});
+        document.getElementById('return-365d-pct').textContent = ((returns365d / capital) * 100).toFixed(2) + '%';
+
+        // Funding breakdown
+        document.getElementById('funding-8h').textContent = '$' + funding8h.toFixed(2);
+        document.getElementById('funding-day').textContent = '$' + fundingDay.toFixed(2);
+        document.getElementById('funding-month').textContent = '$' + fundingMonth.toFixed(2);
+
+        // Execution steps
+        document.getElementById('step1-btc').textContent = positionSize.toFixed(6);
+        document.getElementById('step1-cost').textContent = spotCapital.toLocaleString(undefined, {maximumFractionDigits: 2});
+        document.getElementById('step2-btc').textContent = positionSize.toFixed(6);
+        document.getElementById('step2-margin').textContent = perpMargin.toLocaleString(undefined, {maximumFractionDigits: 2});
+        document.getElementById('step2-leverage').textContent = leverage;
+    }
+
+    // Initialize
+    document.addEventListener('DOMContentLoaded', () => {
+        fetchMarketData();
+
+        // Recalculate on input change
+        document.getElementById('capital').addEventListener('input', calculateReturns);
+        document.getElementById('leverage').addEventListener('change', calculateReturns);
+        document.getElementById('funding-rate').addEventListener('input', calculateReturns);
+    });
+</script>
+{% endblock %}

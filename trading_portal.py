@@ -861,6 +861,12 @@ def trades_page():
     return render_template('trades.html')
 
 
+@app.route('/delta-neutral')
+def delta_neutral_page():
+    """Delta-neutral strategy calculator page."""
+    return render_template('delta_neutral.html')
+
+
 @app.route('/api/dashboard')
 def api_dashboard():
     """Get dashboard data including current funding rate and Z-score."""
