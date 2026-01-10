@@ -582,79 +582,7 @@ def bootstrap_funding_history(symbol: str, periods: int = 90) -> int:
     return len(all_rates)
 
 
-def update_funding_data():
-    """
-    Update funding rate data - called periodically by scheduler.
-
-    This function:
-    1. Fetches current funding rate and swap price
-    2. Calculates Z-score against historical data
-    3. Stores the data point
-    4. Checks for trading signals
-    """
-    settings = get_settings()
-    symbol = settings['symbol']
-    client = get_okx_client()
-
-    # Get current funding rate from OKX
-    funding_data = client.get_funding_rate(symbol)
-    if not funding_data:
-        print(f"Failed to fetch funding rate for {symbol}")
-        return
-
-    # Get current ticker for swap price
-    ticker = client.get_ticker(symbol)
-    swap_price = ticker.get('last_price', 0) if ticker else 0
-
-    # Get historical rates for Z-score calculation
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT funding_rate FROM funding_rate_history
-        WHERE symbol = ?
-        ORDER BY funding_time DESC
-        LIMIT ?
-    ''', (symbol, settings['lookback_periods']))
-
-    historical_rates = [row['funding_rate'] for row in cursor.fetchall()]
-
-    # Add current rate at the beginning for Z-score calculation
-    current_rate = funding_data['funding_rate']
-    all_rates = [current_rate] + historical_rates
-
-    # Calculate Z-score
-    z_data = calculate_z_score(all_rates)
-
-    # Store current funding rate snapshot
-    funding_time = datetime.fromtimestamp(funding_data['funding_time'] / 1000, tz=timezone.utc)
-    try:
-        cursor.execute('''
-            INSERT OR REPLACE INTO funding_rate_history
-            (symbol, funding_rate, funding_time, swap_price, z_score, mean_rate, std_dev)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            symbol,
-            current_rate,
-            funding_time.isoformat(),
-            swap_price,
-            z_data['z_score'],
-            z_data['mean'],
-            z_data['std_dev'],
-        ))
-    except sqlite3.IntegrityError:
-        pass
-
-    # Store price snapshot
-    cursor.execute('''
-        INSERT INTO price_snapshots (symbol, swap_price)
-        VALUES (?, ?)
-    ''', (symbol, swap_price))
-
-    conn.commit()
-    conn.close()
-
-    # Check for signals and handle trading
-    check_and_execute_signals(z_data, funding_data, ticker, settings)
+# Old update_funding_data removed - replaced by update_funding_rate which runs every 8 hours
 
 
 def check_and_execute_signals(z_data: Dict, funding_data: Dict,
@@ -1271,33 +1199,135 @@ def api_stats():
 
 scheduler = BackgroundScheduler()
 
+# Cache for current price (updated frequently for UI)
+_price_cache = {'price': 0, 'updated': None}
+
+
+def update_price_only():
+    """Update just the swap price for UI display. Runs every 30 seconds."""
+    global _price_cache
+    settings = get_settings()
+    client = get_okx_client()
+
+    ticker = client.get_ticker(settings['symbol'])
+    if ticker:
+        _price_cache['price'] = ticker.get('last_price', 0)
+        _price_cache['updated'] = datetime.now(timezone.utc)
+
+
+def update_funding_rate():
+    """
+    Update funding rate data - runs after each 8-hour funding period.
+    This is the only time Z-score can change.
+    """
+    settings = get_settings()
+    symbol = settings['symbol']
+    client = get_okx_client()
+
+    # Get current funding rate from OKX
+    funding_data = client.get_funding_rate(symbol)
+    if not funding_data:
+        print(f"Failed to fetch funding rate for {symbol}")
+        return
+
+    # Get current ticker for swap price
+    ticker = client.get_ticker(symbol)
+    swap_price = ticker.get('last_price', 0) if ticker else 0
+
+    # Update price cache
+    global _price_cache
+    _price_cache['price'] = swap_price
+    _price_cache['updated'] = datetime.now(timezone.utc)
+
+    # Get historical rates for Z-score calculation
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT funding_rate FROM funding_rate_history
+        WHERE symbol = ?
+        ORDER BY funding_time DESC
+        LIMIT ?
+    ''', (symbol, settings['lookback_periods']))
+
+    historical_rates = [row['funding_rate'] for row in cursor.fetchall()]
+
+    # Add current rate at the beginning for Z-score calculation
+    current_rate = funding_data['funding_rate']
+    all_rates = [current_rate] + historical_rates
+
+    # Calculate Z-score
+    z_data = calculate_z_score(all_rates)
+
+    # Store funding rate (only stores if funding_time is new)
+    funding_time = datetime.fromtimestamp(funding_data['funding_time'] / 1000, tz=timezone.utc)
+    try:
+        cursor.execute('''
+            INSERT OR REPLACE INTO funding_rate_history
+            (symbol, funding_rate, funding_time, swap_price, z_score, mean_rate, std_dev)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            symbol,
+            current_rate,
+            funding_time.isoformat(),
+            swap_price,
+            z_data['z_score'],
+            z_data['mean'],
+            z_data['std_dev'],
+        ))
+        conn.commit()
+        print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] Funding rate updated: {current_rate*100:.4f}%, Z-score: {z_data['z_score']:.2f}")
+    except Exception as e:
+        print(f"Error storing funding rate: {e}")
+    finally:
+        conn.close()
+
+    # Check for trading signals
+    ticker_data = {'last_price': swap_price}
+    check_and_execute_signals(z_data, funding_data, ticker_data, settings)
+
 
 def start_scheduler():
     """Start the background scheduler for data collection."""
-    # Update funding data every minute
+
+    # Price updates every 30 seconds (for UI only)
     scheduler.add_job(
-        update_funding_data,
+        update_price_only,
         'interval',
-        minutes=1,
-        id='update_funding_data',
+        seconds=30,
+        id='update_price',
         replace_existing=True
     )
 
-    # Check for funding payments every 8 hours (at funding times)
-    # OKX funding times: 00:00, 08:00, 16:00 UTC
+    # Funding rate update after each 8-hour period (00:05, 08:05, 16:05 UTC)
+    # This is when Z-score actually changes
+    scheduler.add_job(
+        update_funding_rate,
+        'cron',
+        hour='0,8,16',
+        minute=5,
+        id='update_funding_rate',
+        replace_existing=True
+    )
+
+    # Check for funding payments (same time as rate update)
     scheduler.add_job(
         check_funding_payments,
         'cron',
         hour='0,8,16',
-        minute=5,  # 5 minutes after funding time
+        minute=5,
         id='check_funding_payments',
         replace_existing=True
     )
 
     scheduler.start()
     print("Background scheduler started")
-    print("  - Data update: every 1 minute")
-    print("  - Funding check: 00:05, 08:05, 16:05 UTC")
+    print("  - Price update: every 30 seconds (UI only)")
+    print("  - Funding rate: 00:05, 08:05, 16:05 UTC (when Z-score changes)")
+    print("  - Funding payments: 00:05, 08:05, 16:05 UTC")
+
+    # Initial data fetch
+    print("Fetching initial data...")
+    update_funding_rate()
 
 
 def check_funding_payments():
