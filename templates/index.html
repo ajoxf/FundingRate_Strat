@@ -313,8 +313,11 @@
         document.getElementById('annualized-rate').className = 'stat-value ' +
             (data.annualized_rate >= 0 ? 'text-green' : 'text-red');
 
-        // Countdown
-        document.getElementById('countdown').textContent = data.countdown;
+        // Countdown - store next funding time for live countdown
+        if (data.next_funding_time) {
+            nextFundingTime = data.next_funding_time;
+        }
+        updateCountdown();
 
         // Z-Score
         const zScore = data.z_score;
@@ -574,6 +577,30 @@
         return parseFloat(num).toFixed(decimals) + '%';
     }
 
+    // Countdown timer - updates every second
+    let nextFundingTime = null;
+
+    function updateCountdown() {
+        if (!nextFundingTime) return;
+
+        const now = Date.now();
+        const diff = nextFundingTime - now;
+
+        if (diff <= 0) {
+            document.getElementById('countdown').textContent = '00:00:00';
+            // Refresh data when funding time passes
+            fetchDashboard();
+            return;
+        }
+
+        const hours = Math.floor(diff / (1000 * 60 * 60));
+        const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+        const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+
+        document.getElementById('countdown').textContent =
+            `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    }
+
     // Initialize
     document.addEventListener('DOMContentLoaded', () => {
         initCharts();
@@ -581,7 +608,10 @@
         fetchChartData();
         fetchStats();
 
-        // Auto-refresh every 30 seconds
+        // Countdown updates every second
+        setInterval(updateCountdown, 1000);
+
+        // Auto-refresh dashboard every 30 seconds
         setInterval(fetchDashboard, 30000);
         setInterval(fetchChartData, 60000);
 
