@@ -2,12 +2,14 @@
 OKX Funding Rate Mean Reversion Trading System - Streamlit UI
 
 Run with: streamlit run streamlit_app.py
+
+NOTE: Streamlit Cloud apps sleep after inactivity. For 24/7 algo trading,
+use the Flask version (trading_portal.py) on a local machine or VPS.
 """
 
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
 from datetime import datetime, timezone
 import time
 
@@ -35,29 +37,95 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for dark theme styling
+# Custom CSS matching Flask dark theme
 st.markdown("""
 <style>
-    .metric-card {
-        background-color: #1e1e1e;
+    .stApp {
+        background-color: #0d1117;
+    }
+    .card {
+        background-color: #161b22;
+        border: 1px solid #30363d;
         border-radius: 8px;
-        padding: 16px;
-        margin: 8px 0;
+        padding: 20px;
+        margin-bottom: 16px;
     }
-    .metric-value {
+    .card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 16px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid #30363d;
+    }
+    .card-title {
+        font-size: 16px;
+        font-weight: 600;
+        color: #e6edf3;
+    }
+    .stat-box {
+        text-align: center;
+        padding: 12px;
+    }
+    .stat-label {
+        font-size: 11px;
+        color: #8b949e;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin-bottom: 4px;
+    }
+    .stat-value {
         font-size: 24px;
-        font-weight: bold;
+        font-weight: 700;
+        color: #e6edf3;
     }
-    .metric-label {
-        color: #888;
+    .stat-value.green { color: #3fb950; }
+    .stat-value.red { color: #f85149; }
+    .stat-value.blue { color: #58a6ff; }
+    .stat-value.purple { color: #a371f7; }
+    .signal-box {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        border-radius: 12px;
+        padding: 24px;
+        text-align: center;
+        border: 1px solid #30363d;
+    }
+    .badge {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 20px;
         font-size: 12px;
+        font-weight: 600;
     }
-    .positive { color: #00ff88; }
-    .negative { color: #ff4444; }
-    .neutral { color: #888; }
-    .signal-long { background-color: rgba(0, 255, 136, 0.1); border-left: 4px solid #00ff88; }
-    .signal-short { background-color: rgba(255, 68, 68, 0.1); border-left: 4px solid #ff4444; }
-    .signal-none { background-color: rgba(136, 136, 136, 0.1); border-left: 4px solid #888; }
+    .badge-green { background-color: rgba(63, 185, 80, 0.2); color: #3fb950; }
+    .badge-red { background-color: rgba(248, 81, 73, 0.2); color: #f85149; }
+    .badge-blue { background-color: rgba(88, 166, 255, 0.2); color: #58a6ff; }
+    .badge-yellow { background-color: rgba(210, 153, 34, 0.2); color: #d29922; }
+    .countdown {
+        font-family: monospace;
+        font-size: 20px;
+        font-weight: 700;
+        color: #e6edf3;
+        background: #21262d;
+        padding: 8px 16px;
+        border-radius: 6px;
+    }
+    .divider {
+        border-top: 1px solid #30363d;
+        margin: 16px 0;
+    }
+    .threshold-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    .threshold-table td {
+        padding: 12px 8px;
+        border-bottom: 1px solid #30363d;
+        color: #e6edf3;
+    }
+    .text-muted { color: #8b949e; }
+    .text-green { color: #3fb950; }
+    .text-red { color: #f85149; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -86,17 +154,13 @@ def get_funding_history(symbol: str, limit: int = 90) -> pd.DataFrame:
 def get_trades(symbol: str, status: str = None, limit: int = 50) -> pd.DataFrame:
     """Get trades from database."""
     conn = get_db_connection()
-    query = """
-        SELECT * FROM trades
-        WHERE symbol = ?
-    """
+    query = "SELECT * FROM trades WHERE symbol = ?"
     params = [symbol]
     if status:
         query += " AND status = ?"
         params.append(status)
     query += " ORDER BY entry_time DESC LIMIT ?"
     params.append(limit)
-
     df = pd.read_sql_query(query, conn, params=params)
     conn.close()
     return df
@@ -106,7 +170,6 @@ def get_stats(symbol: str) -> dict:
     """Get trading statistics."""
     conn = get_db_connection()
     cursor = conn.cursor()
-
     cursor.execute('''
         SELECT
             COUNT(*) as total_trades,
@@ -116,17 +179,12 @@ def get_stats(symbol: str) -> dict:
             SUM(funding_pnl) as total_funding_pnl,
             SUM(COALESCE(fee_cost, 0)) as total_fees,
             SUM(COALESCE(slippage_cost, 0)) as total_slippage,
-            SUM(COALESCE(net_pnl, total_pnl)) as total_net_pnl,
-            AVG(total_pnl) as avg_pnl,
-            MAX(COALESCE(net_pnl, total_pnl)) as best_trade,
-            MIN(COALESCE(net_pnl, total_pnl)) as worst_trade
+            SUM(COALESCE(net_pnl, total_pnl)) as total_net_pnl
         FROM trades
         WHERE symbol = ? AND status = 'closed'
     ''', (symbol,))
-
     row = cursor.fetchone()
     conn.close()
-
     stats = dict(row) if row else {}
     if stats.get('total_trades') and stats['total_trades'] > 0:
         stats['win_rate'] = (stats['winning_trades'] / stats['total_trades']) * 100
@@ -144,25 +202,50 @@ def get_current_data(settings: dict) -> dict:
     symbol = settings['symbol']
 
     try:
-        # Get current funding rate
         funding_data = client.get_funding_rate(symbol)
         if not funding_data:
             return None
 
         current_rate = float(funding_data.get('fundingRate', 0))
-        next_funding_time = int(funding_data.get('nextFundingTime', 0))
-
-        # Get current price
         ticker = client.get_ticker(symbol)
         current_price = float(ticker.get('last', 0)) if ticker else 0
 
-        # Calculate Z-score
-        z_data = calculate_z_score(symbol, settings['lookback_periods'])
+        # Get historical rates for Z-score
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT funding_rate FROM funding_rate_history
+            WHERE symbol = ? ORDER BY funding_time DESC LIMIT ?
+        ''', (symbol, settings['lookback_periods']))
+        historical_rates = [row['funding_rate'] for row in cursor.fetchall()]
+        conn.close()
 
-        # Calculate time until next funding
-        now = datetime.now(timezone.utc)
-        next_funding = datetime.fromtimestamp(next_funding_time / 1000, tz=timezone.utc)
-        time_diff = next_funding - now
+        all_rates = [current_rate] + historical_rates
+        data_points = len(all_rates)
+
+        if len(all_rates) >= 10:
+            mean_rate = sum(all_rates) / len(all_rates)
+            variance = sum((r - mean_rate) ** 2 for r in all_rates) / len(all_rates)
+            std_dev = variance ** 0.5
+            z_score = (current_rate - mean_rate) / std_dev if std_dev > 0 else 0
+        else:
+            mean_rate = current_rate
+            std_dev = 0
+            z_score = 0
+
+        # Calculate countdown to next funding (00:00, 08:00, 16:00 UTC)
+        now_utc = datetime.now(timezone.utc)
+        current_hour = now_utc.hour
+        funding_hours = [0, 8, 16, 24]
+        next_funding_hour = next(h for h in funding_hours if h > current_hour)
+
+        if next_funding_hour == 24:
+            from datetime import timedelta
+            next_funding_dt = now_utc.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        else:
+            next_funding_dt = now_utc.replace(hour=next_funding_hour, minute=0, second=0, microsecond=0)
+
+        time_diff = next_funding_dt - now_utc
         hours, remainder = divmod(int(time_diff.total_seconds()), 3600)
         minutes, seconds = divmod(remainder, 60)
         countdown = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
@@ -173,12 +256,12 @@ def get_current_data(settings: dict) -> dict:
             'funding_rate': current_rate,
             'funding_rate_pct': current_rate * 100,
             'annualized_rate': current_rate * 100 * 3 * 365,
-            'z_score': z_data.get('z_score', 0) if z_data else 0,
-            'mean_rate': z_data.get('mean_rate', 0) if z_data else 0,
-            'std_dev': z_data.get('std_dev', 0) if z_data else 0,
-            'data_points': z_data.get('data_points', 0) if z_data else 0,
+            'z_score': z_score,
+            'mean_rate': mean_rate,
+            'std_dev': std_dev,
+            'data_points': data_points,
             'countdown': countdown,
-            'next_funding_time': next_funding,
+            'funding_direction': 'POSITIVE' if current_rate >= 0 else 'NEGATIVE',
         }
     except Exception as e:
         st.error(f"Error fetching data: {e}")
@@ -186,20 +269,9 @@ def get_current_data(settings: dict) -> dict:
 
 
 def render_dashboard():
-    """Render the main dashboard page."""
+    """Render the main dashboard page - matching Flask layout."""
     settings = get_settings()
-
-    st.title(f"📈 {settings['symbol']}")
-
-    # Paper mode badge
-    if settings['paper_mode']:
-        st.warning("📝 **Paper Trading Mode** - Trades are simulated")
-    else:
-        st.error("⚠️ **Live Trading Mode** - Real orders will be placed!")
-
-    # Fetch current data
-    with st.spinner("Fetching market data..."):
-        data = get_current_data(settings)
+    data = get_current_data(settings)
 
     if not data:
         st.error("Unable to fetch market data. Check your API connection.")
@@ -207,88 +279,203 @@ def render_dashboard():
             st.rerun()
         return
 
-    # Top row: Price and Funding info
-    col1, col2, col3, col4 = st.columns(4)
+    # Two column layout like Flask
+    left_col, right_col = st.columns([1, 1])
 
-    with col1:
-        st.metric("Swap Price", f"${data['current_price']:,.2f}")
-
-    with col2:
-        rate_color = "normal" if data['funding_rate'] >= 0 else "inverse"
-        st.metric("Funding Rate", f"{data['funding_rate_pct']:.4f}%",
-                  delta=f"Annualized: {data['annualized_rate']:.1f}%",
-                  delta_color=rate_color)
-
-    with col3:
-        st.metric("Next Funding", data['countdown'])
-
-    with col4:
-        st.metric("Data Points", f"{data['data_points']} periods")
-
-    st.divider()
-
-    # Z-Score Analysis - Center card
-    z_score = data['z_score']
-    entry_threshold = settings['entry_std_dev']
-    exit_threshold = settings['exit_std_dev']
-    stop_loss = settings['stop_loss_std_dev']
-
-    # Determine signal
-    signal = "none"
-    signal_text = "No Signal"
-    signal_color = "#8b949e"
-    if z_score >= entry_threshold:
-        signal = "short"
-        signal_text = "SHORT Signal"
-        signal_color = "#ff4444"
-    elif z_score <= -entry_threshold:
-        signal = "long"
-        signal_text = "LONG Signal"
-        signal_color = "#00ff88"
-    elif abs(z_score) <= exit_threshold:
-        signal_text = "Near Mean"
-        signal_color = "#58a6ff"
-
-    # Z-Score card - centered
-    st.markdown(f"""
-    <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-                border-radius: 16px; padding: 24px; margin: 16px auto;
-                border: 1px solid #30363d; max-width: 500px; text-align: center;">
-        <div style="color: #8b949e; font-size: 12px; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 8px;">Z-Score</div>
-        <div style="color: {signal_color}; font-size: 56px; font-weight: 700; margin-bottom: 8px;">{z_score:.2f}σ</div>
-        <div style="color: {signal_color}; font-size: 18px; font-weight: 600; margin-bottom: 16px;">{signal_text}</div>
-        <div style="display: flex; justify-content: space-around; padding-top: 16px; border-top: 1px solid #30363d;">
-            <div>
-                <div style="color: #8b949e; font-size: 11px;">Mean Rate</div>
-                <div style="color: #ffffff; font-size: 14px; font-weight: 600;">{data['mean_rate']*100:.4f}%</div>
-            </div>
-            <div>
-                <div style="color: #8b949e; font-size: 11px;">Std Dev</div>
-                <div style="color: #ffffff; font-size: 14px; font-weight: 600;">{data['std_dev']*100:.4f}%</div>
-            </div>
-            <div>
-                <div style="color: #8b949e; font-size: 11px;">Entry</div>
-                <div style="color: #ffffff; font-size: 14px; font-weight: 600;">±{entry_threshold}σ</div>
-            </div>
-            <div>
-                <div style="color: #8b949e; font-size: 11px;">Stop Loss</div>
-                <div style="color: #ffffff; font-size: 14px; font-weight: 600;">±{stop_loss}σ</div>
+    with left_col:
+        # Symbol Header Card
+        st.markdown(f"""
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <h2 style="margin: 0; color: #e6edf3; font-size: 24px;">{data['symbol']}</h2>
+                    <span class="text-muted">Perpetual Swap</span>
+                </div>
+                <span class="badge badge-{'green' if data['funding_direction'] == 'POSITIVE' else 'red'}">{data['funding_direction']}</span>
             </div>
         </div>
-    </div>
-    """, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
 
-    st.divider()
+        # Price & Funding Info Card
+        ann_color = 'green' if data['annualized_rate'] >= 0 else 'red'
+        st.markdown(f"""
+        <div class="card">
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; text-align: center;">
+                <div class="stat-box">
+                    <div class="stat-label">Swap Price</div>
+                    <div class="stat-value">${data['current_price']:,.2f}</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Funding Rate</div>
+                    <div class="stat-value">{data['funding_rate_pct']:.4f}%</div>
+                    <div class="text-muted" style="font-size: 12px;">{data['funding_rate']:.6f}</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Annualized</div>
+                    <div class="stat-value {ann_color}">{data['annualized_rate']:.2f}%</div>
+                </div>
+            </div>
+            <div class="divider"></div>
+            <div style="display: flex; justify-content: center; align-items: center; gap: 16px;">
+                <span class="text-muted">Next Funding In:</span>
+                <span class="countdown">{data['countdown']}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    # Charts
-    col1, col2 = st.columns(2)
+        # Z-Score Analysis Card
+        z_score = data['z_score']
+        entry_threshold = settings['entry_std_dev']
+        exit_threshold = settings['exit_std_dev']
 
-    with col1:
-        st.subheader("Z-Score History")
+        if z_score >= entry_threshold:
+            signal_text = "SHORT SIGNAL"
+            signal_class = "badge-red"
+        elif z_score <= -entry_threshold:
+            signal_text = "LONG SIGNAL"
+            signal_class = "badge-green"
+        elif abs(z_score) <= exit_threshold:
+            signal_text = "NEAR MEAN"
+            signal_class = "badge-blue"
+        else:
+            signal_text = "NO SIGNAL"
+            signal_class = "badge-blue"
+
+        st.markdown(f"""
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Z-Score Analysis</span>
+                <span class="text-muted">{data['data_points']} periods</span>
+            </div>
+            <div class="signal-box">
+                <div class="stat-label">Current Z-Score</div>
+                <div class="stat-value" style="font-size: 48px;">{z_score:.2f}σ</div>
+                <div style="margin-top: 12px;">
+                    <span class="badge {signal_class}">{signal_text}</span>
+                </div>
+            </div>
+            <div class="divider"></div>
+            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; text-align: center;">
+                <div class="stat-box">
+                    <div class="stat-label">Mean Rate</div>
+                    <div class="stat-value blue">{data['mean_rate']*100:.4f}%</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Std Dev</div>
+                    <div class="stat-value purple">{data['std_dev']*100:.4f}%</div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Signal Thresholds Card
+        entry_high_rate = data['mean_rate'] + (entry_threshold * data['std_dev'])
+        entry_low_rate = data['mean_rate'] - (entry_threshold * data['std_dev'])
+
+        st.markdown(f"""
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Signal Thresholds</span>
+            </div>
+            <table class="threshold-table">
+                <tr>
+                    <td><span class="badge badge-red">SHORT</span> Entry</td>
+                    <td style="text-align: right;">≥ +{entry_threshold}σ</td>
+                    <td style="text-align: right;" class="text-muted">{entry_high_rate*100:.4f}%</td>
+                </tr>
+                <tr>
+                    <td><span class="badge badge-green">LONG</span> Entry</td>
+                    <td style="text-align: right;">≤ -{entry_threshold}σ</td>
+                    <td style="text-align: right;" class="text-muted">{entry_low_rate*100:.4f}%</td>
+                </tr>
+                <tr>
+                    <td>Exit (Mean Reversion)</td>
+                    <td style="text-align: right;">±{exit_threshold}σ</td>
+                    <td style="text-align: right;" class="text-muted">Near mean</td>
+                </tr>
+                <tr>
+                    <td>Stop Loss</td>
+                    <td style="text-align: right;">±{settings['stop_loss_std_dev']}σ</td>
+                    <td style="text-align: right;" class="text-muted">Extreme deviation</td>
+                </tr>
+            </table>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with right_col:
+        # Current Position Card
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown('<div class="card-header"><span class="card-title">Current Position</span></div>', unsafe_allow_html=True)
+
+        open_trade = get_open_trade(settings['symbol'])
+
+        if open_trade:
+            side_color = 'green' if open_trade['side'] == 'long' else 'red'
+            costs = calculate_trade_costs(
+                open_trade['entry_price'],
+                data['current_price'],
+                open_trade['position_size'],
+                settings
+            )
+
+            st.markdown(f"""
+            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; text-align: center;">
+                <div class="stat-box">
+                    <div class="stat-label">Side</div>
+                    <div class="stat-value {side_color}">{open_trade['side'].upper()}</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Size</div>
+                    <div class="stat-value">{open_trade['position_size']}</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Entry Price</div>
+                    <div class="stat-value">${open_trade['entry_price']:,.2f}</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Entry Z-Score</div>
+                    <div class="stat-value">{open_trade['entry_z_score']:.2f}σ</div>
+                </div>
+            </div>
+            <div class="divider"></div>
+            <div style="text-align: center;" class="text-muted">
+                Opened: {open_trade['entry_time']}
+            </div>
+            """, unsafe_allow_html=True)
+
+            if st.button("🔴 Close Position", key="close_pos"):
+                execute_close_trade(open_trade['id'], "manual")
+                st.success("Position closed!")
+                time.sleep(1)
+                st.rerun()
+        else:
+            st.markdown('<div style="text-align: center; padding: 20px;" class="text-muted">No open position</div>', unsafe_allow_html=True)
+
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🟢 Open Long", key="open_long", use_container_width=True):
+                    execute_open_trade(settings['symbol'], 'long', data['current_price'],
+                                      data['funding_rate'], z_score, settings)
+                    st.success("Long position opened!")
+                    time.sleep(1)
+                    st.rerun()
+            with col2:
+                if st.button("🔴 Open Short", key="open_short", use_container_width=True):
+                    execute_open_trade(settings['symbol'], 'short', data['current_price'],
+                                      data['funding_rate'], z_score, settings)
+                    st.success("Short position opened!")
+                    time.sleep(1)
+                    st.rerun()
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # Z-Score History Chart
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown('<div class="card-header"><span class="card-title">Z-Score History</span></div>', unsafe_allow_html=True)
+
         history = get_funding_history(settings['symbol'], settings['lookback_periods'])
 
         if not history.empty:
-            # Calculate Z-scores for history
             mean = history['funding_rate'].mean()
             std = history['funding_rate'].std()
             if std > 0:
@@ -300,34 +487,39 @@ def render_dashboard():
             fig.add_trace(go.Scatter(
                 x=history['funding_time'],
                 y=history['z_score'],
-                mode='lines',
+                mode='lines+markers',
                 name='Z-Score',
-                line=dict(color='#58a6ff')
+                line=dict(color='#58a6ff', width=2),
+                marker=dict(size=4)
             ))
-            # Add threshold lines
-            fig.add_hline(y=entry_threshold, line_dash="dash", line_color="#ff4444",
-                         annotation_text="Short Entry")
-            fig.add_hline(y=-entry_threshold, line_dash="dash", line_color="#00ff88",
-                         annotation_text="Long Entry")
-            fig.add_hline(y=0, line_dash="dot", line_color="#888")
+            fig.add_hline(y=entry_threshold, line_dash="dash", line_color="#f85149",
+                         annotation_text="Entry High")
+            fig.add_hline(y=-entry_threshold, line_dash="dash", line_color="#3fb950",
+                         annotation_text="Entry Low")
+            fig.add_hline(y=0, line_dash="dot", line_color="#8b949e")
 
             fig.update_layout(
-                height=300,
-                margin=dict(l=0, r=0, t=20, b=0),
+                height=250,
+                margin=dict(l=0, r=0, t=10, b=0),
                 paper_bgcolor='rgba(0,0,0,0)',
                 plot_bgcolor='rgba(0,0,0,0)',
-                xaxis=dict(gridcolor='#333'),
-                yaxis=dict(gridcolor='#333'),
-                font={'color': 'white'}
+                xaxis=dict(gridcolor='#30363d', tickfont=dict(color='#8b949e')),
+                yaxis=dict(gridcolor='#30363d', tickfont=dict(color='#8b949e')),
+                showlegend=True,
+                legend=dict(font=dict(color='#8b949e'))
             )
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No historical data. Click 'Fetch Historical Data' in Settings.")
+            st.info("No historical data. Go to Settings to fetch data.")
 
-    with col2:
-        st.subheader("Funding Rate History")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # Funding Rate History Chart
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown('<div class="card-header"><span class="card-title">Funding Rate History</span></div>', unsafe_allow_html=True)
+
         if not history.empty:
-            colors = ['#00ff88' if x >= 0 else '#ff4444' for x in history['funding_rate']]
+            colors = ['#3fb950' if x >= 0 else '#f85149' for x in history['funding_rate']]
             fig = go.Figure(go.Bar(
                 x=history['funding_time'],
                 y=history['funding_rate'] * 100,
@@ -335,123 +527,76 @@ def render_dashboard():
                 name='Funding Rate %'
             ))
             fig.update_layout(
-                height=300,
-                margin=dict(l=0, r=0, t=20, b=0),
+                height=250,
+                margin=dict(l=0, r=0, t=10, b=0),
                 paper_bgcolor='rgba(0,0,0,0)',
                 plot_bgcolor='rgba(0,0,0,0)',
-                xaxis=dict(gridcolor='#333'),
-                yaxis=dict(gridcolor='#333', title='Rate %'),
-                font={'color': 'white'}
+                xaxis=dict(gridcolor='#30363d', tickfont=dict(color='#8b949e')),
+                yaxis=dict(gridcolor='#30363d', tickfont=dict(color='#8b949e'), title=dict(text='Rate %', font=dict(color='#8b949e'))),
+                showlegend=False
             )
             st.plotly_chart(fig, use_container_width=True)
 
-    st.divider()
+        st.markdown('</div>', unsafe_allow_html=True)
 
-    # Current Position
-    st.subheader("Current Position")
-    open_trade = get_open_trade(settings['symbol'])
-
-    if open_trade:
-        col1, col2, col3, col4 = st.columns(4)
-
-        side_emoji = "🟢" if open_trade['side'] == 'long' else "🔴"
-
-        with col1:
-            st.metric("Side", f"{side_emoji} {open_trade['side'].upper()}")
-        with col2:
-            st.metric("Entry Price", f"${open_trade['entry_price']:,.2f}")
-        with col3:
-            st.metric("Size", open_trade['position_size'])
-        with col4:
-            st.metric("Entry Z-Score", f"{open_trade['entry_z_score']:.2f}σ")
-
-        # Estimated costs
-        costs = calculate_trade_costs(
-            open_trade['entry_price'],
-            data['current_price'],
-            open_trade['position_size'],
-            settings
-        )
-
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Est. Fees", f"-${costs['fee_cost']:.2f}")
-        with col2:
-            st.metric("Est. Slippage", f"-${costs['slippage_cost']:.2f}")
-        with col3:
-            st.metric("Total Est. Cost", f"-${costs['total_cost']:.2f}")
-
-        st.caption(f"Opened: {open_trade['entry_time']}")
-
-        if st.button("🔴 Close Position", type="primary"):
-            with st.spinner("Closing position..."):
-                execute_close_trade(open_trade['id'], "manual")
-                st.success("Position closed!")
-                time.sleep(1)
-                st.rerun()
-    else:
-        st.info("No open position")
-
-        col1, col2, _ = st.columns([1, 1, 2])
-        with col1:
-            if st.button("🟢 Open LONG", type="primary"):
-                with st.spinner("Opening long position..."):
-                    execute_open_trade(settings['symbol'], 'long', data['current_price'],
-                                      data['funding_rate'], z_score, settings)
-                    st.success("Long position opened!")
-                    time.sleep(1)
-                    st.rerun()
-        with col2:
-            if st.button("🔴 Open SHORT", type="secondary"):
-                with st.spinner("Opening short position..."):
-                    execute_open_trade(settings['symbol'], 'short', data['current_price'],
-                                      data['funding_rate'], z_score, settings)
-                    st.success("Short position opened!")
-                    time.sleep(1)
-                    st.rerun()
-
-    st.divider()
-
-    # Trading Stats
-    st.subheader("Trading Statistics")
+    # Trading Statistics Card - Full Width
     stats = get_stats(settings['symbol'])
 
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Total Trades", stats.get('total_trades', 0))
-    with col2:
-        st.metric("Win Rate", f"{stats.get('win_rate', 0):.1f}%")
-    with col3:
-        total_pnl = stats.get('total_pnl', 0) or 0
-        st.metric("Gross P&L", f"${total_pnl:,.2f}",
-                  delta_color="normal" if total_pnl >= 0 else "inverse")
-    with col4:
-        net_pnl = stats.get('total_net_pnl', 0) or 0
-        st.metric("Net P&L", f"${net_pnl:,.2f}",
-                  delta_color="normal" if net_pnl >= 0 else "inverse")
+    pnl_color = 'green' if (stats.get('total_pnl', 0) or 0) >= 0 else 'red'
+    funding_color = 'green' if (stats.get('total_funding_pnl', 0) or 0) >= 0 else 'red'
+    net_color = 'green' if (stats.get('total_net_pnl', 0) or 0) >= 0 else 'red'
 
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        total_fees = stats.get('total_fees', 0) or 0
-        st.metric("Total Fees", f"-${total_fees:,.2f}")
-    with col2:
-        total_slip = stats.get('total_slippage', 0) or 0
-        st.metric("Total Slippage", f"-${total_slip:,.2f}")
-    with col3:
-        best = stats.get('best_trade', 0) or 0
-        st.metric("Best Trade", f"${best:,.2f}")
-    with col4:
-        worst = stats.get('worst_trade', 0) or 0
-        st.metric("Worst Trade", f"${worst:,.2f}")
+    st.markdown(f"""
+    <div class="card">
+        <div class="card-header">
+            <span class="card-title">Trading Statistics</span>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; text-align: center;">
+            <div class="stat-box">
+                <div class="stat-label">Total Trades</div>
+                <div class="stat-value">{stats.get('total_trades', 0)}</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">Win Rate</div>
+                <div class="stat-value">{stats.get('win_rate', 0):.1f}%</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">Total P&L (Gross)</div>
+                <div class="stat-value {pnl_color}">${stats.get('total_pnl', 0) or 0:,.2f}</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">Funding P&L</div>
+                <div class="stat-value {funding_color}">${stats.get('total_funding_pnl', 0) or 0:,.2f}</div>
+            </div>
+        </div>
+        <div class="divider"></div>
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; text-align: center;">
+            <div class="stat-box">
+                <div class="stat-label">Total Fees</div>
+                <div class="stat-value red">-${stats.get('total_fees', 0) or 0:,.2f}</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">Total Slippage</div>
+                <div class="stat-value red">-${stats.get('total_slippage', 0) or 0:,.2f}</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">Net P&L</div>
+                <div class="stat-value {net_color}">${stats.get('total_net_pnl', 0) or 0:,.2f}</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">Fee Rate</div>
+                <div class="stat-value text-muted">{settings.get('taker_fee', 0.05):.3f}%</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 def render_trades():
     """Render the trades history page."""
     st.title("📊 Trade History")
-
     settings = get_settings()
 
-    # Filters
     col1, col2 = st.columns([1, 3])
     with col1:
         status_filter = st.selectbox("Status", ["All", "Open", "Closed"])
@@ -459,15 +604,12 @@ def render_trades():
         limit = st.slider("Show trades", 10, 200, 50)
 
     status = None if status_filter == "All" else status_filter.lower()
-
-    # Get trades
     trades_df = get_trades(settings['symbol'], status, limit)
 
     if trades_df.empty:
         st.info("No trades found")
         return
 
-    # Stats summary
     stats = get_stats(settings['symbol'])
 
     col1, col2, col3, col4 = st.columns(4)
@@ -476,77 +618,35 @@ def render_trades():
     with col2:
         st.metric("Win Rate", f"{stats.get('win_rate', 0):.1f}%")
     with col3:
-        best = stats.get('best_trade', 0) or 0
-        st.metric("Best Trade", f"${best:,.2f}")
+        st.metric("Gross P&L", f"${stats.get('total_pnl', 0) or 0:,.2f}")
     with col4:
-        worst = stats.get('worst_trade', 0) or 0
-        st.metric("Worst Trade", f"${worst:,.2f}")
-
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        total_pnl = stats.get('total_pnl', 0) or 0
-        st.metric("Gross P&L", f"${total_pnl:,.2f}")
-    with col2:
-        funding_pnl = stats.get('total_funding_pnl', 0) or 0
-        st.metric("Funding P&L", f"${funding_pnl:,.2f}")
-    with col3:
-        total_fees = stats.get('total_fees', 0) or 0
-        st.metric("Total Fees", f"-${total_fees:,.2f}")
-    with col4:
-        net_pnl = stats.get('total_net_pnl', 0) or 0
-        st.metric("Net P&L", f"${net_pnl:,.2f}")
+        st.metric("Net P&L", f"${stats.get('total_net_pnl', 0) or 0:,.2f}")
 
     st.divider()
 
-    # Display trades table
-    display_df = trades_df[[
-        'id', 'side', 'entry_price', 'exit_price',
-        'entry_z_score', 'exit_z_score',
-        'price_pnl', 'funding_pnl', 'fee_cost', 'net_pnl',
-        'status', 'exit_reason', 'entry_time'
-    ]].copy()
-
-    display_df.columns = [
-        'ID', 'Side', 'Entry $', 'Exit $',
-        'Entry Z', 'Exit Z',
-        'Price P&L', 'Funding P&L', 'Fees', 'Net P&L',
-        'Status', 'Exit Reason', 'Entry Time'
-    ]
-
-    # Format columns
-    display_df['Entry $'] = display_df['Entry $'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "--")
-    display_df['Exit $'] = display_df['Exit $'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "--")
-    display_df['Entry Z'] = display_df['Entry Z'].apply(lambda x: f"{x:.2f}σ" if pd.notna(x) else "--")
-    display_df['Exit Z'] = display_df['Exit Z'].apply(lambda x: f"{x:.2f}σ" if pd.notna(x) else "--")
-    display_df['Price P&L'] = display_df['Price P&L'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "$0.00")
-    display_df['Funding P&L'] = display_df['Funding P&L'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "$0.00")
-    display_df['Fees'] = display_df['Fees'].apply(lambda x: f"-${x:,.2f}" if pd.notna(x) and x > 0 else "--")
-    display_df['Net P&L'] = display_df['Net P&L'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "$0.00")
-    display_df['Side'] = display_df['Side'].apply(lambda x: f"{'🟢' if x == 'long' else '🔴'} {x.upper()}")
-    display_df['Status'] = display_df['Status'].apply(lambda x: f"{'🟡' if x == 'open' else '🔵'} {x.upper()}")
-
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-    # Actions for open trades
-    open_trades = trades_df[trades_df['status'] == 'open']
-    if not open_trades.empty:
-        st.subheader("Open Trades Actions")
-        for _, trade in open_trades.iterrows():
-            col1, col2 = st.columns([3, 1])
+    for _, trade in trades_df.iterrows():
+        with st.expander(f"Trade #{trade['id']} - {trade['side'].upper()} @ ${trade['entry_price']:,.2f}"):
+            col1, col2, col3 = st.columns(3)
             with col1:
-                st.write(f"Trade #{trade['id']}: {trade['side'].upper()} @ ${trade['entry_price']:,.2f}")
+                st.write(f"**Entry:** ${trade['entry_price']:,.2f}")
+                st.write(f"**Exit:** ${trade['exit_price']:,.2f}" if trade['exit_price'] else "**Exit:** --")
             with col2:
-                if st.button(f"Close #{trade['id']}", key=f"close_{trade['id']}"):
+                st.write(f"**Price P&L:** ${trade['price_pnl'] or 0:,.2f}")
+                st.write(f"**Funding P&L:** ${trade['funding_pnl'] or 0:,.2f}")
+            with col3:
+                st.write(f"**Fees:** -${trade['fee_cost'] or 0:,.2f}")
+                st.write(f"**Net P&L:** ${trade['net_pnl'] or 0:,.2f}")
+
+            if trade['status'] == 'open':
+                if st.button(f"Close Trade #{trade['id']}", key=f"close_{trade['id']}"):
                     execute_close_trade(trade['id'], "manual")
-                    st.success(f"Trade #{trade['id']} closed!")
-                    time.sleep(1)
+                    st.success("Trade closed!")
                     st.rerun()
 
 
 def render_settings():
     """Render the settings page."""
     st.title("⚙️ Settings")
-
     settings = get_settings()
 
     col1, col2 = st.columns(2)
@@ -556,229 +656,110 @@ def render_settings():
 
         symbol = st.selectbox(
             "Symbol",
-            ["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP", "DOGE-USDT-SWAP", "XRP-USDT-SWAP"],
-            index=["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP", "DOGE-USDT-SWAP", "XRP-USDT-SWAP"].index(settings['symbol'])
+            ["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP"],
+            index=["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP"].index(settings['symbol']) if settings['symbol'] in ["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP"] else 0
         )
 
-        lookback_periods = st.number_input(
-            "Lookback Periods",
-            min_value=10, max_value=500,
-            value=settings['lookback_periods'],
-            help="Number of 8-hour funding periods for mean calculation (90 = 30 days)"
-        )
-
-        entry_std_dev = st.number_input(
-            "Entry Std Dev (σ)",
-            min_value=0.5, max_value=5.0, step=0.1,
-            value=float(settings['entry_std_dev']),
-            help="Z-score threshold for entry signals"
-        )
-
-        exit_std_dev = st.number_input(
-            "Exit Std Dev (σ)",
-            min_value=0.0, max_value=1.0, step=0.1,
-            value=float(settings['exit_std_dev']),
-            help="Z-score threshold for exit (mean reversion complete)"
-        )
-
-        stop_loss_std_dev = st.number_input(
-            "Stop Loss Std Dev (σ)",
-            min_value=3.0, max_value=10.0, step=0.5,
-            value=float(settings['stop_loss_std_dev']),
-            help="Z-score threshold for stop loss"
-        )
-
-        position_size = st.number_input(
-            "Position Size (Contracts)",
-            min_value=0.001, step=0.001,
-            value=float(settings['position_size']),
-            help="Size of position to open"
-        )
-
-        paper_mode = st.toggle(
-            "Paper Trading Mode",
-            value=settings['paper_mode'],
-            help="When enabled, trades are simulated"
-        )
-
-        if not paper_mode:
-            st.warning("⚠️ Live trading mode! Real orders will be placed on OKX.")
+        lookback = st.number_input("Lookback Periods", 10, 500, settings['lookback_periods'])
+        entry_std = st.number_input("Entry Std Dev", 0.5, 5.0, float(settings['entry_std_dev']), 0.1)
+        exit_std = st.number_input("Exit Std Dev", 0.0, 1.0, float(settings['exit_std_dev']), 0.1)
+        stop_loss_std = st.number_input("Stop Loss Std Dev", 3.0, 10.0, float(settings['stop_loss_std_dev']), 0.5)
+        position_size = st.number_input("Position Size", 0.001, 100.0, float(settings['position_size']), 0.001)
+        paper_mode = st.toggle("Paper Trading", settings['paper_mode'])
 
         st.divider()
         st.subheader("Fee Settings")
 
-        maker_fee = st.number_input(
-            "Maker Fee (%)",
-            min_value=0.0, max_value=1.0, step=0.001,
-            value=float(settings.get('maker_fee', 0.02)),
-            help="Fee for limit orders (default: 0.02%)"
-        )
+        maker_fee = st.number_input("Maker Fee (%)", 0.0, 1.0, float(settings.get('maker_fee', 0.02)), 0.001)
+        taker_fee = st.number_input("Taker Fee (%)", 0.0, 1.0, float(settings.get('taker_fee', 0.05)), 0.001)
+        slippage = st.number_input("Est. Slippage (%)", 0.0, 1.0, float(settings.get('estimated_slippage', 0.01)), 0.001)
 
-        taker_fee = st.number_input(
-            "Taker Fee (%)",
-            min_value=0.0, max_value=1.0, step=0.001,
-            value=float(settings.get('taker_fee', 0.05)),
-            help="Fee for market orders (default: 0.05%)"
-        )
-
-        estimated_slippage = st.number_input(
-            "Estimated Slippage (%)",
-            min_value=0.0, max_value=1.0, step=0.001,
-            value=float(settings.get('estimated_slippage', 0.01)),
-            help="Expected slippage per trade"
-        )
-
-        st.info("Check your OKX VIP level at [okx.com/fees](https://www.okx.com/fees)")
-
-        if st.button("💾 Save Strategy Settings", type="primary"):
+        if st.button("💾 Save Settings", type="primary"):
             new_settings = {
                 **settings,
                 'symbol': symbol,
-                'lookback_periods': lookback_periods,
-                'entry_std_dev': entry_std_dev,
-                'exit_std_dev': exit_std_dev,
-                'stop_loss_std_dev': stop_loss_std_dev,
+                'lookback_periods': lookback,
+                'entry_std_dev': entry_std,
+                'exit_std_dev': exit_std,
+                'stop_loss_std_dev': stop_loss_std,
                 'position_size': position_size,
                 'paper_mode': paper_mode,
                 'maker_fee': maker_fee,
                 'taker_fee': taker_fee,
-                'estimated_slippage': estimated_slippage,
+                'estimated_slippage': slippage,
             }
-            if save_settings(new_settings):
-                st.success("Settings saved!")
-                time.sleep(1)
-                st.rerun()
-            else:
-                st.error("Failed to save settings")
+            save_settings(new_settings)
+            st.success("Settings saved!")
+            st.rerun()
 
     with col2:
-        st.subheader("OKX API Credentials")
+        st.subheader("API Credentials")
 
-        api_key = st.text_input(
-            "API Key",
-            value=settings.get('api_key', ''),
-            type="password"
-        )
-
-        api_secret = st.text_input(
-            "API Secret",
-            value=settings.get('api_secret', ''),
-            type="password"
-        )
-
-        api_passphrase = st.text_input(
-            "API Passphrase",
-            value=settings.get('api_passphrase', ''),
-            type="password"
-        )
-
-        st.warning("🔒 Only provide read and trade permissions. Never enable withdrawal!")
+        api_key = st.text_input("API Key", settings.get('api_key', ''), type="password")
+        api_secret = st.text_input("API Secret", settings.get('api_secret', ''), type="password")
+        api_passphrase = st.text_input("Passphrase", settings.get('api_passphrase', ''), type="password")
 
         if st.button("💾 Save API Credentials"):
-            new_settings = {
-                **settings,
-                'api_key': api_key,
-                'api_secret': api_secret,
-                'api_passphrase': api_passphrase,
-            }
-            if save_settings(new_settings):
-                st.success("API credentials saved!")
-            else:
-                st.error("Failed to save credentials")
+            new_settings = {**settings, 'api_key': api_key, 'api_secret': api_secret, 'api_passphrase': api_passphrase}
+            save_settings(new_settings)
+            st.success("Credentials saved!")
 
         st.divider()
         st.subheader("Data Management")
 
-        st.write("Bootstrap historical funding rate data from OKX.")
-
         if st.button("📥 Fetch Historical Data"):
-            with st.spinner("Fetching historical data..."):
+            with st.spinner("Fetching..."):
                 result = bootstrap_funding_history(settings['symbol'])
                 if result > 0:
-                    st.success(f"Fetched {result} historical funding rates!")
+                    st.success(f"Fetched {result} records!")
                 else:
-                    st.error("Failed to fetch data. Check API connection.")
+                    st.error("Failed to fetch data")
 
         st.divider()
-        st.subheader("Strategy Information")
-
-        st.write("**Funding Interval:** Every 8 hours")
-        st.write("**Funding Times (UTC):** 00:00, 08:00, 16:00")
-        st.write("**Data Update:** Every 1 minute")
-
-        st.divider()
-        st.subheader("Strategy Explanation")
-
-        st.markdown("""
-        **Mean Reversion Logic:**
-        Funding rates on perpetual swaps tend to revert to their historical mean.
-        When funding rate deviates significantly (measured by Z-score), we take a
-        position expecting it to return to the mean.
-
-        **Entry Signals:**
-        - 🔴 **SHORT** when Z-score ≥ +2.0σ (funding unusually HIGH)
-        - 🟢 **LONG** when Z-score ≤ -2.0σ (funding unusually LOW)
-
-        **Funding Rate Payments:**
-        - **Positive funding:** Longs pay shorts
-        - **Negative funding:** Shorts pay longs
-
-        **Exit Conditions:**
-        - **Mean Reversion:** Z-score returns to ±0.2σ
-        - **Stop Loss:** Z-score reaches ±6.0σ
+        st.warning("""
+        **Note:** Streamlit Cloud apps sleep after inactivity.
+        For 24/7 automated trading, use the Flask version locally or on a VPS.
         """)
 
 
 def main():
-    """Main application entry point."""
-    # Sidebar navigation
+    """Main app."""
     st.sidebar.title("Navigation")
 
-    page = st.sidebar.radio(
-        "Go to",
-        ["📈 Dashboard", "📊 Trades", "⚙️ Settings"],
-        label_visibility="collapsed"
-    )
+    page = st.sidebar.radio("Go to", ["📈 Dashboard", "📊 Trades", "⚙️ Settings"], label_visibility="collapsed")
 
     st.sidebar.divider()
 
-    # Quick stats in sidebar as a card
     settings = get_settings()
     stats = get_stats(settings['symbol'])
-
-    # Format symbol for display (BTC-USDT-SWAP -> BTC/USDT)
     symbol_display = settings['symbol'].replace('-SWAP', '').replace('-', '/')
 
     st.sidebar.markdown(f"""
     <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-                border-radius: 12px; padding: 16px; margin: 8px 0;
-                border: 1px solid #30363d;">
-        <div style="color: #8b949e; font-size: 11px; text-transform: uppercase; letter-spacing: 1px;">Symbol</div>
-        <div style="color: #ffffff; font-size: 20px; font-weight: 700; margin-bottom: 12px;">{symbol_display}</div>
+                border-radius: 12px; padding: 16px; border: 1px solid #30363d;">
+        <div style="color: #8b949e; font-size: 11px; text-transform: uppercase;">Symbol</div>
+        <div style="color: #fff; font-size: 20px; font-weight: 700; margin-bottom: 12px;">{symbol_display}</div>
         <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
             <span style="color: #8b949e; font-size: 12px;">Total Trades</span>
-            <span style="color: #58a6ff; font-size: 14px; font-weight: 600;">{stats.get('total_trades', 0)}</span>
+            <span style="color: #58a6ff; font-weight: 600;">{stats.get('total_trades', 0)}</span>
         </div>
         <div style="display: flex; justify-content: space-between;">
             <span style="color: #8b949e; font-size: 12px;">Net P&L</span>
-            <span style="color: {'#3fb950' if (stats.get('total_net_pnl', 0) or 0) >= 0 else '#f85149'}; font-size: 14px; font-weight: 600;">${(stats.get('total_net_pnl', 0) or 0):,.2f}</span>
+            <span style="color: {'#3fb950' if (stats.get('total_net_pnl', 0) or 0) >= 0 else '#f85149'}; font-weight: 600;">${(stats.get('total_net_pnl', 0) or 0):,.2f}</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
     st.sidebar.divider()
 
-    if st.sidebar.button("🔄 Refresh Data"):
+    if st.sidebar.button("🔄 Refresh"):
         st.rerun()
 
-    # Auto-refresh toggle
-    auto_refresh = st.sidebar.toggle("Auto-refresh (0.5s)", value=False)
-
+    auto_refresh = st.sidebar.toggle("Auto-refresh (5s)", value=False)
     if auto_refresh:
-        time.sleep(0.5)
+        time.sleep(5)
         st.rerun()
 
-    # Render selected page
     if page == "📈 Dashboard":
         render_dashboard()
     elif page == "📊 Trades":
