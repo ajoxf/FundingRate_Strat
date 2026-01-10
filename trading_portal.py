@@ -1331,9 +1331,12 @@ def start_scheduler():
     print("  - Funding rate: 00:05, 08:05, 16:05 UTC (when Z-score changes)")
     print("  - Funding payments: 00:05, 08:05, 16:05 UTC")
 
-    # Initial data fetch
+    # Initial data fetch (skip if API unavailable)
     print("Fetching initial data...")
-    update_funding_rate()
+    try:
+        update_funding_rate()
+    except Exception as e:
+        print(f"Warning: Could not fetch initial data: {e}")
 
 
 def check_funding_payments():
@@ -1396,10 +1399,14 @@ def main():
     print("Configuring OKX client...")
     update_okx_client()
 
-    # Bootstrap historical data
+    # Bootstrap historical data (skip if API unavailable)
     settings = get_settings()
     print(f"\nBootstrapping funding rate history for {settings['symbol']}...")
-    bootstrap_funding_history(settings['symbol'], settings['lookback_periods'])
+    try:
+        bootstrap_funding_history(settings['symbol'], settings['lookback_periods'])
+    except Exception as e:
+        print(f"Warning: Could not bootstrap historical data: {e}")
+        print("The app will start without historical data. Data will be fetched when API is available.")
 
     # Start scheduler
     print("\nStarting background scheduler...")
